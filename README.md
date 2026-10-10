@@ -55,6 +55,16 @@ ai-relay-panel/
 
 见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。
 
+## 文档索引
+
+| 文档 | 用途 |
+|---|---|
+| [`docs/HANDOVER.md`](docs/HANDOVER.md) | **交接文档** —— 现状、环境、凭证位置、所有实测坑。接手前先读这个 |
+| [`docs/API_CONTRACT.md`](docs/API_CONTRACT.md) | 接口契约（前后端并行开发的唯一依据，含 §10 上游坑） |
+| [`docs/DESIGN_SPEC.md`](docs/DESIGN_SPEC.md) | 视觉规范（CSS 变量、组件、禁止事项） |
+| [`docs/DEPLOY.md`](docs/DEPLOY.md) | 部署 / 更新 / 回滚 / 排障 |
+| [`docs/TASKS.md`](docs/TASKS.md) | 三个 agent 的任务书与验收标准（历史参考） |
+
 ## 接口契约
 
 **开发前必读**：[`docs/API_CONTRACT.md`](docs/API_CONTRACT.md)、[`docs/DESIGN_SPEC.md`](docs/DESIGN_SPEC.md)。
