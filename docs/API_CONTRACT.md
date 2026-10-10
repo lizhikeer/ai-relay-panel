@@ -277,6 +277,23 @@
   "models": [], "group": "default" }
 ```
 
+创建响应（**唯一一次明文回显**）：
+
+```json
+{ "success": true, "message": "", "data": { "id": 12, "key": "sk-4d5e6f...(48位)" } }
+```
+
+> ⚠️ **一次性明文 key（2026-10-10 新增）**
+> 上游 New API 的 `POST /api/token/` **既不返回令牌 id 也不返回明文 key**，且
+> 列表/详情一律只回掩码（`MaskTokenKey`，形如 `lX5l**********GrzF`）。
+> BFF 在创建后按 `name` 定位新令牌，再调 `POST /api/token/{id}/key`
+> （上游返回 `token.GetFullKey()`）取回明文，**随创建响应返回这一次**。
+>
+> - `data.id`：新建令牌 id（可能为 `null`，表示未能定位）
+> - `data.key`：`sk-` 前缀 + 48 位完整密钥（可能为 `null`，取回失败时）
+> - **除本接口外，任何接口都不会返回明文**；`GET /tokens` 的 `key_masked` 恒为掩码
+> - 前端须在创建成功后立即弹窗提示用户复制保存（关闭后不可再取）
+
 ---
 
 ## 6. 用户 `/panel-api/users`

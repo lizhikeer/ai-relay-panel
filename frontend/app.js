@@ -848,10 +848,13 @@
 
       req.then(function (body2) {
         if (body2.success) {
+          var created = body2.data || {};
           toast(isEdit ? '令牌已更新' : '令牌已创建', 'success');
           closeModal();
           loadTokens();
           refreshOverview(true);
+          // 创建后**一次性**展示完整 key（此后列表只有掩码，见契约 §5）
+          if (!isEdit && created.key) showTokenKey(created.key, name);
         }
       }).catch(function (e) {
         var errBox = $('#tk-form-error');
@@ -862,6 +865,50 @@
         saveBtn.textContent = original;
       });
     });
+  }
+
+  /* 令牌创建成功后**一次性**展示完整 key。
+     上游仅在创建后能取到明文（列表/详情一律回掩码），所以这里必须提醒用户立即保存。 */
+  function showTokenKey(key, tokenName) {
+    var body = '' +
+      '<p class="key-tip">这是令牌「' + esc(tokenName) + '」的完整密钥，' +
+        '<b>仅显示这一次</b>。关闭后无法再次查看（列表只显示掩码）。请立即复制并妥善保存。</p>' +
+      '<div class="key-box">' +
+        '<input class="form-control mono" id="tk-newkey" readonly value="' + esc(key) + '">' +
+        '<button class="btn btn-primary" data-act="copykey">复制</button>' +
+      '</div>' +
+      '<p class="key-tip key-tip-sub">客户端 base_url 填：' +
+        '<span class="mono">https://api.91666.icu:8443/v1</span></p>';
+    var footer = '<button class="btn btn-outline" data-act="closekey">我已保存，关闭</button>';
+    openModal('令牌创建成功', body, footer, function (act) {
+      if (act === 'copykey') { copyText(key, '已复制完整 key'); return; }
+      closeModal();
+    });
+  }
+
+  /* 复制文本：优先 Clipboard API，失败或不可用时降级为临时 textarea + execCommand */
+  function copyText(text, okMsg) {
+    function done() { toast(okMsg || '已复制', 'success'); }
+    function fallback() {
+      try {
+        var tmp = document.createElement('textarea');
+        tmp.value = text;
+        tmp.style.position = 'fixed';
+        tmp.style.opacity = '0';
+        document.body.appendChild(tmp);
+        tmp.select();
+        document.execCommand('copy');
+        document.body.removeChild(tmp);
+        done();
+      } catch (e) {
+        toast('复制失败，请手动选中复制', 'error');
+      }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fallback);
+    } else {
+      fallback();
+    }
   }
 
   /* ---------------- 调用日志 ---------------- */

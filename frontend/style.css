@@ -447,6 +447,14 @@ input[type="checkbox"] { accent-color: var(--accent-blue); }
 
 .confirm-text { color: var(--text-primary); font-size: 13px; word-break: break-word; }
 
+/* ---------- 令牌完整 key 一次性展示 ---------- */
+.key-tip { color: var(--text-secondary); font-size: 13px; line-height: 1.6; margin-bottom: 12px; }
+.key-tip b { color: var(--status-yellow); }
+.key-tip-sub { margin: 12px 0 0; color: var(--text-muted); font-size: 12px; }
+.key-box { display: flex; gap: 8px; align-items: stretch; }
+.key-box .form-control { flex: 1 1 auto; min-width: 0; }
+.key-box .btn { flex: 0 0 auto; }
+
 /* ---------- 加载动画 ---------- */
 .spinner {
   display: inline-block;

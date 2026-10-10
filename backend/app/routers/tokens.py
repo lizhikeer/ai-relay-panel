@@ -43,8 +43,10 @@ async def list_tokens(
 async def create_token(payload: TokenIn, _: dict = Depends(require_login)):
     if not payload.name:
         return fail("令牌名不能为空")
-    await get_client().create_token(payload.model_dump(exclude_none=True))
-    return ok(None)
+    result = await get_client().create_token(payload.model_dump(exclude_none=True))
+    # data = { "id": 12, "key": "sk-...." }
+    # key 为**一次性**明文回显（上游仅能在创建后取到明文），此后所有查询接口只回掩码。
+    return ok(result)
 
 
 @router.put("/{tid}")

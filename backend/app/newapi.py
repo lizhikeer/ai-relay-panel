@@ -532,7 +532,15 @@ class NewAPIClient:
     async def list_tokens(self, page: int, size: int) -> dict:
         return await self._json_request("GET", "/api/token/", params={"p": page, "page_size": size})
 
-    async def create_token(self, payload: dict) -> None:
+    async def create_token(self, payload: dict) -> dict:
+        """创建令牌，并**一次性**取回明文 key。
+
+        New API 的 `POST /api/token/` 既不返回令牌 id 也不返回明文 key，
+        且列表/详情接口一律只回掩码（`MaskTokenKey`）。唯一能拿到明文的途径是
+        `POST /api/token/{id}/key`（返回 `token.GetFullKey()`）。
+        因此这里：创建 → 按 name 定位最新令牌 → 取回明文 key → 随创建响应返回一次。
+        之后任何查询接口仍只会拿到掩码（契约 §5「一次性回显」）。
+        """
         body = {
             "name": payload.get("name") or "",
             "remain_quota": payload.get("quota", 0),
@@ -546,6 +554,34 @@ class NewAPIClient:
         res = await self._json_request("POST", "/api/token/", json=body)
         if not res.get("success"):
             raise BusinessError(f"创建令牌失败：{res.get('message') or '未知错误'}")
+
+        new_id = await self._find_newest_token_id_by_name(body["name"])
+        key: str | None = None
+        if new_id is not None:
+            raw = await self.get_token_key(new_id)
+            if raw:
+                # 上游存的 key 不带 sk- 前缀；对外统一暴露带前缀的完整密钥
+                key = raw if raw.startswith("sk-") else f"sk-{raw}"
+        return {"id": new_id, "key": key}
+
+    async def get_token_key(self, tid: int) -> str | None:
+        """取回令牌明文 key（New API `POST /api/token/{id}/key`）。失败返回 None。"""
+        try:
+            res = await self._json_request("POST", f"/api/token/{tid}/key", json={})
+        except UpstreamError:
+            return None
+        if not res.get("success"):
+            return None
+        return (res.get("data") or {}).get("key") or None
+
+    async def _find_newest_token_id_by_name(self, name: str) -> int | None:
+        """按 name 定位刚创建的令牌（取 id 最大者，即最新）。"""
+        body = await self.list_tokens(1, 100)
+        items = (body.get("data") or {}).get("items") or []
+        matches = [t for t in items if (t.get("name") or "") == name]
+        if not matches:
+            return None
+        return max(matches, key=lambda t: t.get("id") or 0).get("id")
 
     async def update_token(self, tid: int, payload: dict) -> dict:
         # New API 的 PUT /api/token/ 是「全量覆盖」，缺字段会被清零；先取回原值再合并。

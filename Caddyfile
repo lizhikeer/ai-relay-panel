@@ -6,7 +6,9 @@
 #
 # 站点一览：
 #   :8090   → UpSnap 管理面板（127.0.0.1:18090）
-#   :8443   → api.91666.icu，反代【新面板 BFF】(127.0.0.1:18080)
+#   :8443   → api.91666.icu，按路径分流：
+#               /v1*、/v1beta* → 【New API 引擎】(127.0.0.1:3000)  —— 客户端 API 出口
+#               其余           → 【新面板 BFF】(127.0.0.1:18080)  —— 面板 UI + /panel-api
 #   :18083  → api.91666.icu，反代【New API 原生面板】(127.0.0.1:3000) —— 应急后路
 #
 # ⚠️ 端口说明: 443 已被 fnOS 系统 Web 管理占用 (自签证书 CN=fnOS, nginx, 跳转 5667)。
@@ -33,18 +35,34 @@
 	reverse_proxy 127.0.0.1:18090
 }
 
-# ===== 中转站入口 → 自建面板 BFF (8443) =====
-# 客户端 base_url = https://api.91666.icu:8443/v1
-# 浏览器面板     = https://api.91666.icu:8443/         （BFF 同时托管静态前端）
-# 2026-10-10: 反代目标由 New API 原生面板(3000) 切换为 BFF(18080)。
+# ===== 中转站入口：面板 UI + 客户端 API (8443) =====
+# 浏览器面板 = https://api.91666.icu:8443/
+# 客户端 API = https://api.91666.icu:8443/v1      （客户端 base_url 填到这里）
+# 2026-10-10: 由「整站反代 BFF」改为「按路径分流」——此前 /v1 落到 BFF 会 404，
+#   客户端其实根本调不通；现让 /v1*、/v1beta* 直连 New API 引擎。
 :8443 {
 	tls /certs/91666.icu.pem /certs/91666.icu.key
-	reverse_proxy 127.0.0.1:18080 {
-		# 关键: 关闭响应缓冲, 保证 SSE / 流式输出不被截断
-		flush_interval -1
-		# 传递原始协议与客户端 IP, 否则应用生成的重定向/日志会误判为 http
-		header_up X-Forwarded-Proto {scheme}
-		header_up X-Real-IP {remote_host}
+
+	# --- 客户端 API 出口：直连 New API 引擎 ---
+	# 覆盖 OpenAI(/v1/chat/completions)、Anthropic(/v1/messages)、Gemini(/v1beta)
+	@client_api path /v1 /v1/* /v1beta /v1beta/*
+	handle @client_api {
+		reverse_proxy 127.0.0.1:3000 {
+			# 关键: 关闭响应缓冲, 保证 SSE / 流式输出不被截断
+			flush_interval -1
+			# 传递原始协议与客户端 IP, 否则应用生成的重定向/日志会误判为 http
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# --- 面板：其余路径（/ 、/panel-api/* 、静态资源）交给 BFF ---
+	handle {
+		reverse_proxy 127.0.0.1:18080 {
+			flush_interval -1
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+		}
 	}
 }
 
