@@ -22,6 +22,7 @@
     tokens: { items: [], total: 0, page: 1, size: 100 },
     logs: { items: [], total: 0, page: 1, size: 50, type: '', keyword: '' },
     logsPaused: false,
+    alertDismissed: false,
     timers: { overview: null, logs: null },
     loadedTabs: {}
   };
@@ -243,6 +244,7 @@
       .then(function () {
         state.overview = null;
         state.loadedTabs = {};
+        state.alertDismissed = false;   // 重新登录后应再次提醒
         showLogin();
         toast('已登出', 'success');
       });
@@ -381,6 +383,43 @@
     }
 
     $('#dash-updated').textContent = '更新时间：' + nowText();
+
+    renderAlertBanner(chAbnormal);
+  }
+
+  /* ---------------- 全局告警横幅 ---------------- */
+  /* 有渠道被自动禁用时置顶显示，便于定期巡检时一眼看到；
+     用户手动关闭后本次会话内不再打扰（下次刷新页面若仍异常会重新出现）。 */
+  function renderAlertBanner(list) {
+    var el = $('#alert-banner');
+    if (!el) return;
+    if (!list || !list.length || state.alertDismissed) {
+      el.style.display = 'none';
+      el.innerHTML = '';
+      return;
+    }
+    var items = list.map(function (it) {
+      return '<li><span class="alert-chname">' + esc(it.name) + '</span>' +
+             '（ID ' + esc(it.id != null ? it.id : '—') + '）— ' +
+             esc(it.reason || '异常') + '</li>';
+    }).join('');
+    el.innerHTML =
+      '<span class="alert-icon">⚠️</span>' +
+      '<div class="alert-body">' +
+        '<div class="alert-title">有 ' + list.length + ' 个渠道处于异常状态，需要处理</div>' +
+        '<ul class="alert-list">' + items + '</ul>' +
+        '<div class="alert-hint">常见原因：上游账号额度耗尽 → 到「渠道管理」检查该渠道，' +
+        '续费或更换密钥后手动重新启用即可。</div>' +
+      '</div>' +
+      '<button class="alert-close" id="alert-banner-close" title="本次忽略">×</button>';
+    el.style.display = 'flex';
+    var btn = $('#alert-banner-close');
+    if (btn) {
+      btn.onclick = function () {
+        state.alertDismissed = true;
+        el.style.display = 'none';
+      };
+    }
   }
 
   /* ---------------- 渠道管理 ---------------- */

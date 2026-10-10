@@ -474,3 +474,57 @@ input[type="checkbox"] { accent-color: var(--accent-blue); }
   .filter-bar .form-control { width: 100%; }
   .pagination { justify-content: center; }
 }
+
+/* ---------- 全局告警横幅 ---------- */
+/* 有渠道被自动禁用时置顶显示，便于定期巡检一眼看到 */
+.alert-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px 16px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--status-red);
+  border-left-width: 4px;
+  background: rgba(224, 36, 94, .12);
+  color: var(--text-primary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.alert-banner .alert-icon {
+  flex: 0 0 auto;
+  font-size: 15px;
+  line-height: 1.4;
+}
+.alert-banner .alert-body { flex: 1 1 auto; }
+.alert-banner .alert-title {
+  font-weight: 600;
+  color: var(--status-red);
+  margin-bottom: 2px;
+}
+.alert-banner .alert-list {
+  margin: 4px 0 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+}
+.alert-banner .alert-list li { margin: 2px 0; }
+.alert-banner .alert-list .alert-chname {
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.alert-banner .alert-hint {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.alert-banner .alert-close {
+  flex: 0 0 auto;
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 4px;
+}
+.alert-banner .alert-close:hover { color: var(--text-primary); }
