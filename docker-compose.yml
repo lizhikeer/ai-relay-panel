@@ -1,0 +1,39 @@
+# ai-relay-panel —— 自建面板 BFF + 静态前端
+#
+# 用 `network_mode: host`：BFF 直接监听宿主 127.0.0.1:18080，
+# 与 NAS 上既有服务（new-api:3000 / upsnap-caddy:8443）保持同一网络命名空间，
+# 便于 BFF 用回环地址访问 New API，也便于 upsnap-caddy 用回环反代它。
+#
+# ⚠️ 端口：18080（不是 8080，8080 已被 xray-camouflage-nginx 占用）
+#
+# 前置：项目根目录需存在 .env（见 .env.example），由 deploy.sh 校验。
+services:
+  ai-relay-panel:
+    build:
+      context: ./backend
+    image: ai-relay-panel:0.1.0
+    container_name: ai-relay-panel
+    network_mode: host
+    restart: unless-stopped
+    # 用 .env 注入配置（NEWAPI_* / PANEL_* / LISTEN_PORT）
+    env_file:
+      - .env
+    environment:
+      # 显式锁定监听端口，防止 .env 被误改导致与 Caddy 反代目标不一致
+      LISTEN_PORT: "18080"
+    volumes:
+      # BFF 托管静态前端。容器内 PROJECT_ROOT 解析为 /，故静态目录为 /frontend
+      # （backend/app/config.py: PROJECT_ROOT = config.py 祖先两级 = 容器根）。
+      # 只读挂载；改前端无需重建镜像，重启容器即可生效。
+      - ./frontend:/frontend:ro
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:18080/panel-api/system/health',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

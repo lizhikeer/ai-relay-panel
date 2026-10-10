@@ -1,0 +1,61 @@
+# =============================================================================
+# Caddyfile —— NAS 入口网关（容器 upsnap-caddy，host 网络）
+# 版本化记录于 ai-relay-panel 仓库根目录；运行时生效位置为
+#   /vol4/docker/upsnap/Caddyfile （bind mount: /etc/caddy/Caddyfile 只读）
+# =============================================================================
+#
+# 站点一览：
+#   :8090   → UpSnap 管理面板（127.0.0.1:18090）
+#   :8443   → api.91666.icu，反代【新面板 BFF】(127.0.0.1:18080)
+#   :18083  → api.91666.icu，反代【New API 原生面板】(127.0.0.1:3000) —— 应急后路
+#
+# ⚠️ 端口说明: 443 已被 fnOS 系统 Web 管理占用 (自签证书 CN=fnOS, nginx, 跳转 5667)。
+#    故各站点使用高位端口，与 fnOS / xray / UpSnap 全部隔离，互不影响。
+#    8080 已被 xray-camouflage-nginx 占用；BFF 使用 18080。
+#
+# ⚠️ 变更本文件后的正确姿势（deploy.sh 已封装）：
+#      1) caddy validate 校验候选配置
+#      2) 备份现网 /vol4/docker/upsnap/Caddyfile
+#      3) 原地写入新配置（不要 mv/rm，否则会破坏文件的 bind mount）
+#      4) docker exec upsnap-caddy caddy reload --config /etc/caddy/Caddyfile --force
+#    切勿用 docker restart upsnap-caddy：会中断 UpSnap，且可能因监听套接字竞态启动失败。
+#
+# ⚠️ 不要给 SPA 加 Caddy basic_auth（历史教训）：只保护 / 会导致 SPA 加载/跳转失败，
+#    保护全部路径则每次跳转都要重新认证。登录保护交给应用自身（BFF / New API）。
+
+{
+	auto_https disable_redirects
+}
+
+# ===== UpSnap 管理面板 (8090) =====
+:8090 {
+	tls /certs/91666.icu.pem /certs/91666.icu.key
+	reverse_proxy 127.0.0.1:18090
+}
+
+# ===== 中转站入口 → 自建面板 BFF (8443) =====
+# 客户端 base_url = https://api.91666.icu:8443/v1
+# 浏览器面板     = https://api.91666.icu:8443/         （BFF 同时托管静态前端）
+# 2026-10-10: 反代目标由 New API 原生面板(3000) 切换为 BFF(18080)。
+:8443 {
+	tls /certs/91666.icu.pem /certs/91666.icu.key
+	reverse_proxy 127.0.0.1:18080 {
+		# 关键: 关闭响应缓冲, 保证 SSE / 流式输出不被截断
+		flush_interval -1
+		# 传递原始协议与客户端 IP, 否则应用生成的重定向/日志会误判为 http
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+}
+
+# ===== 应急后路：New API 原生面板 (18083) =====
+# BFF 或其反代异常时，运维可改走 https://api.91666.icu:18083/ 直接管理 New API。
+# 与 8443 同域同证书，仅端口不同。保留 flush_interval -1 以兼容原生面板的流式请求。
+:18083 {
+	tls /certs/91666.icu.pem /certs/91666.icu.key
+	reverse_proxy 127.0.0.1:3000 {
+		flush_interval -1
+		header_up X-Forwarded-Proto {scheme}
+		header_up X-Real-IP {remote_host}
+	}
+}
