@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI 中转站管理面板</title>
+  <!-- 内联空 favicon：避免浏览器自动请求 /favicon.ico 产生 404 -->
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 提示挂载点（固定在右上角，登录前后都可用） -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- ============ 登录视图 ============ -->
+  <div id="login-view" class="login-view">
+    <div class="login-card card">
+      <div class="brand login-brand">
+        <div class="brand-icon">AI</div>
+        <div>
+          <div class="brand-title">AI 中转站管理面板</div>
+          <div class="brand-sub">ai-relay-panel · 自建中转站控制台</div>
+        </div>
+      </div>
+
+      <form id="login-form" autocomplete="on">
+        <div class="form-group">
+          <label class="form-label" for="login-username">用户名</label>
+          <input class="form-control" id="login-username" name="username"
+                 type="text" autocomplete="username" placeholder="请输入面板账号" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="login-password">密码</label>
+          <input class="form-control" id="login-password" name="password"
+                 type="password" autocomplete="current-password" placeholder="请输入密码" required>
+        </div>
+        <div id="login-error" class="field-error" hidden></div>
+        <button class="btn btn-primary login-btn" id="login-submit" type="submit">登 录</button>
+      </form>
+
+      <div class="login-hint">演示账号：<code>LzK</code> / <code>panel123</code></div>
+    </div>
+  </div>
+
+  <!-- ============ 主界面 ============ -->
+  <div id="app-view" hidden>
+    <header class="navbar">
+      <div class="nav-container">
+        <div class="brand">
+          <div class="brand-icon">AI</div>
+          <div>
+            <div class="brand-title">AI 中转站管理面板</div>
+            <div class="brand-sub">New API 引擎 · 自建控制台</div>
+          </div>
+        </div>
+        <div class="nav-status">
+          <span id="badge-upstream" class="badge badge-gray">上游检测中…</span>
+          <span id="badge-channels" class="badge badge-gray">渠道 --/--</span>
+          <span id="badge-today" class="badge badge-gray">今日 -- 次</span>
+          <span class="nav-user" id="nav-username"></span>
+          <button id="btn-logout" class="btn btn-outline btn-sm">登出</button>
+        </div>
+      </div>
+      <nav class="nav-tabs">
+        <button class="tab-btn active" data-tab="tab-dashboard">运行看板</button>
+        <button class="tab-btn" data-tab="tab-channels">渠道管理</button>
+        <button class="tab-btn" data-tab="tab-tokens">令牌管理</button>
+        <button class="tab-btn" data-tab="tab-logs">调用日志</button>
+        <button class="tab-btn" data-tab="tab-system">系统设置</button>
+      </nav>
+    </header>
+
+    <main class="main-container">
+      <!-- ---------- 1. 运行看板 ---------- -->
+      <section id="tab-dashboard" class="tab-pane active">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">运行概览</div>
+            <div class="card-actions">
+              <span class="muted" id="dash-updated">更新时间：--</span>
+              <button class="btn btn-outline btn-sm" id="dash-refresh">🔄 刷新</button>
+            </div>
+          </div>
+          <div class="grid-4">
+            <div class="stat-box">
+              <div class="stat-label">渠道</div>
+              <div class="stat-value" id="dash-channels-value">--</div>
+              <div class="stat-sub" id="dash-channels-sub">--</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">令牌</div>
+              <div class="stat-value" id="dash-tokens-value">--</div>
+              <div class="stat-sub" id="dash-tokens-sub">--</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">今日请求</div>
+              <div class="stat-value" id="dash-req-value">--</div>
+              <div class="stat-sub" id="dash-req-sub">--</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">今日消费</div>
+              <div class="stat-value" id="dash-quota-value">--</div>
+              <div class="stat-sub" id="dash-quota-sub">--</div>
+            </div>
+          </div>
+          <div class="grid-4" style="margin-top:16px">
+            <div class="stat-box">
+              <div class="stat-label">上游连通性</div>
+              <div class="stat-value" id="dash-upstream-value">--</div>
+              <div class="stat-sub" id="dash-upstream-sub">--</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">今日 Tokens</div>
+              <div class="stat-value" id="dash-tokens-today">--</div>
+              <div class="stat-sub">输入 + 输出合计</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">面板版本</div>
+              <div class="stat-value" id="dash-version">--</div>
+              <div class="stat-sub" id="dash-uptime">运行时长：--</div>
+            </div>
+            <div class="stat-box">
+              <div class="stat-label">异常渠道</div>
+              <div class="stat-value" id="dash-abnormal-value">--</div>
+              <div class="stat-sub">需人工处理</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">异常渠道</div>
+            <span id="dash-abnormal-badge" class="badge badge-gray">0 条</span>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr><th class="num">ID</th><th>渠道名称</th><th>异常原因</th></tr>
+              </thead>
+              <tbody id="dash-abnormal-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 2. 渠道管理 ---------- -->
+      <section id="tab-channels" class="tab-pane">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">渠道列表</div>
+            <div class="card-actions">
+              <button class="btn btn-outline btn-sm" id="channel-refresh">🔄 刷新</button>
+              <button class="btn btn-primary btn-sm" id="channel-create">＋ 新建渠道</button>
+            </div>
+          </div>
+          <div class="filter-bar">
+            <input class="form-control" id="channel-keyword" placeholder="按名称搜索">
+            <select class="form-control" id="channel-status">
+              <option value="">全部状态</option>
+              <option value="1">启用</option>
+              <option value="0">禁用</option>
+            </select>
+            <button class="btn btn-outline btn-sm" id="channel-search">搜索</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th class="num">ID</th>
+                  <th>名称</th>
+                  <th>类型</th>
+                  <th>状态</th>
+                  <th class="num">模型数</th>
+                  <th class="num">延迟</th>
+                  <th>最近测试</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="channels-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 3. 令牌管理 ---------- -->
+      <section id="tab-tokens" class="tab-pane">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">令牌列表</div>
+            <div class="card-actions">
+              <button class="btn btn-outline btn-sm" id="token-refresh">🔄 刷新</button>
+              <button class="btn btn-primary btn-sm" id="token-create">＋ 新建令牌</button>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th class="num">ID</th>
+                  <th>名称</th>
+                  <th>Key</th>
+                  <th>状态</th>
+                  <th class="num">已用额度</th>
+                  <th class="num">剩余额度</th>
+                  <th>最近使用</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="tokens-body"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 4. 调用日志 ---------- -->
+      <section id="tab-logs" class="tab-pane">
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">用量统计（近 7 天）</div>
+            <span class="muted" id="logs-stats-updated">--</span>
+          </div>
+          <div class="grid-4" id="logs-stats">
+            <div class="stat-box"><div class="stat-label">累计请求</div><div class="stat-value" id="logs-stat-requests">--</div></div>
+            <div class="stat-box"><div class="stat-label">累计 Tokens</div><div class="stat-value" id="logs-stat-tokens">--</div></div>
+            <div class="stat-box"><div class="stat-label">累计消费</div><div class="stat-value" id="logs-stat-quota">--</div></div>
+            <div class="stat-box"><div class="stat-label">调用最多模型</div><div class="stat-value" id="logs-stat-topmodel">--</div></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">调用日志</div>
+            <div class="card-actions">
+              <button class="btn btn-outline btn-sm" id="logs-refresh">🔄 刷新</button>
+              <button class="btn btn-warning btn-sm" id="logs-pause">⏸️ 暂停刷新</button>
+            </div>
+          </div>
+          <div class="filter-bar">
+            <select class="form-control" id="logs-type">
+              <option value="">全部类型</option>
+              <option value="1">充值</option>
+              <option value="2">消费</option>
+              <option value="3">管理</option>
+              <option value="4">系统</option>
+              <option value="5">错误</option>
+            </select>
+            <input class="form-control" id="logs-keyword" placeholder="按模型 / 用户 / 渠道搜索">
+            <select class="form-control" id="logs-size">
+              <option value="20">每页 20</option>
+              <option value="50" selected>每页 50</option>
+              <option value="100">每页 100</option>
+            </select>
+            <button class="btn btn-outline btn-sm" id="logs-search">筛选</button>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead>
+                <tr>
+                  <th class="num">ID</th>
+                  <th>时间</th>
+                  <th>类型</th>
+                  <th>用户</th>
+                  <th>令牌</th>
+                  <th>模型</th>
+                  <th>渠道</th>
+                  <th class="num">输入</th>
+                  <th class="num">输出</th>
+                  <th class="num">消费</th>
+                  <th class="num">耗时</th>
+                  <th>流式</th>
+                </tr>
+              </thead>
+              <tbody id="logs-body"></tbody>
+            </table>
+          </div>
+          <div class="pagination">
+            <button class="btn btn-outline btn-sm" id="logs-prev">← 上一页</button>
+            <span class="muted" id="logs-pageinfo">第 1 页</span>
+            <button class="btn btn-outline btn-sm" id="logs-next">下一页 →</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------- 5. 系统设置 ---------- -->
+      <section id="tab-system" class="tab-pane">
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">系统信息</div>
+              <button class="btn btn-outline btn-sm" id="system-refresh">🔄 刷新</button>
+            </div>
+            <div class="table-wrap">
+              <table class="table">
+                <tbody id="system-info-body"></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header"><div class="card-title">运行健康</div></div>
+            <div class="table-wrap">
+              <table class="table">
+                <tbody id="system-health-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">关键设置（脱敏）</div>
+            <span class="badge badge-blue">只读</span>
+          </div>
+          <div class="table-wrap">
+            <table class="table">
+              <thead><tr><th>配置项</th><th>值</th></tr></thead>
+              <tbody id="system-options-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">面板账号</div>
+            <span class="badge badge-gray">待接口支持</span>
+          </div>
+          <p class="muted" style="margin-bottom:12px">
+            当前 <code>API_CONTRACT.md</code> 未定义「修改面板账号 / 密码」接口，
+            因此该功能暂不可用；后端补齐接口后此入口即可启用。
+          </p>
+          <div class="btn-group">
+            <button class="btn btn-primary" disabled>修改面板密码</button>
+            <button class="btn btn-outline" disabled>修改面板用户名</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- ============ 通用弹窗 ============ -->
+  <div class="modal-overlay" id="modal-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-title" id="modal-title"></div>
+        <button class="modal-close" id="modal-close" type="button" aria-label="关闭">×</button>
+      </div>
+      <div class="modal-body" id="modal-body"></div>
+      <div class="modal-footer" id="modal-footer"></div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

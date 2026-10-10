@@ -86,11 +86,17 @@
 
 `GET /panel-api/auth/session`
 
+> **本接口永不返回 401**。未登录时返回 `200 + authenticated:false`，
+> 避免浏览器控制台出现无意义的 401 红色错误日志（其他受保护接口仍用 401）。
+
 ```json
 // 已登录
 { "success": true, "data": { "authenticated": true, "username": "LzK", "expires_at": 1791900000 } }
-// 未登录 → 返回 401（前端据此跳登录页）
+// 未登录
+{ "success": true, "data": { "authenticated": false } }
 ```
+
+前端启动时调用它决定进入登录视图还是主界面。
 
 ---
 
@@ -131,9 +137,16 @@
 
 ## 4. 渠道 `/panel-api/channels`
 
-> ⚠️ **实现提示**：New API 的渠道创建接口（`POST /api/channel/`）在 `v1.0.0-rc.41` 版本存在缺陷，
-> 对任何请求体都返回 `channel cannot be empty`。后端须**先探测该接口是否可用**，
-> 不可用时在响应中给出明确引导（见 §4.4 的降级说明），不得静默失败。
+> ℹ️ **关于渠道创建（2026-10-10 实测更正）**
+> New API `v1.0.0-rc.41` 的 `POST /api/channel/` **是可用的**，但它要求**包装结构**请求体：
+> ```json
+> { "mode": "single", "channel": { ...扁平渠道对象... } }
+> ```
+> 若直接发送扁平的渠道对象，会因为顶层 `channel` 字段缺失而返回 `channel cannot be empty`——
+> 这是**调用姿势问题，不是服务端缺陷**（此前版本的本文档曾误判为缺陷，此处已更正）。
+>
+> **契约对外形状不变**（前端仍按 §4.3 发扁平对象），包装由 BFF 在 `newapi.py` 内完成。
+> BFF 仍须保留非破坏性的能力探测：万一上游版本变化导致不可用，应返回明确的错误引导而非静默失败。
 
 ### 4.1 列表
 
@@ -338,3 +351,75 @@
 2. **不要在前端拼接 New API 原始字段**：只用本契约定义的字段，后端负责转换。
 3. **轮询而非长连接**（v1）：概览每 15s、日志每 5s 拉一次即可，简单可靠。
 4. **渠道 key 永不回显明文**：编辑渠道时 key 输入框留空表示「不修改」。
+
+---
+
+## 10. 上游 New API 实现细节与已知约束
+
+> 以下均为 2026-10-10 在 `new-api v1.0.0-rc.41` 上**实测**得出的结论，
+> BFF 实现必须据此处理。写在这里避免后来者重复踩坑。
+
+### 10.1 鉴权
+
+- 登录：`POST /api/user/login`，响应取 `data.access_token` 与 `data.user.id`
+- 后续管理请求需**同时**带：`Authorization: Bearer <token>` 与 `New-Api-User: <user_id>`
+- token 有过期时间（`access_expires_at`），BFF 需缓存 + 过期自动重登
+- ⚠️ **登录接口有 IP 级强限流**：每 IP 每 20 分钟仅 20 次，超出返回 `429`（空 body）。
+  BFF 靠 token 缓存基本不会触发；但**联调/压测时极易被限流**，遇到 429 应快速失败并给出明确提示，不要无效重试。
+
+### 10.2 路由尾斜杠敏感
+
+`/api/channel/`（带斜杠）与 `/api/channel` 行为不同——后者会被 Go `ServeMux` 用 `307` 跳回带斜杠版本。
+BFF 调用时**必须带尾斜杠**，否则可能拿到 307 空响应体。
+
+### 10.3 渠道状态有三态，需映射
+
+| New API 值 | 含义 |
+|---|---|
+| `1` | 启用 |
+| `2` | 手动禁用 |
+| `3` | 自动禁用（额度耗尽/连续失败触发）|
+
+**没有 `0`**。而契约对外是 `1`(启用) / `0`(禁用)，BFF 须做双向映射（面板 `0` → 上游 `2`）。
+
+另外：
+- `PUT /api/channel/` **改不动 status**，必须走 `POST /api/channel/{id}/status`，
+  body 为 `{"channel_id": id, "status": 1|2}`（传 `{"status":0}` 会报 `Invalid parameters`）。
+- 渠道创建请求体需包装为 `{"mode":"single","channel":{...}}`（见 §4 提示）。
+
+### 10.4 更新是「全量覆盖」语义（危险）
+
+`PUT /api/token/` 若请求体缺字段，**会把缺的字段清零**（实测会清空 name/quota/expired_time）。
+BFF 更新令牌时必须**先取回原值再合并**。
+渠道更新在 `key` 留空时不下发该字段（契合 §9.4）。
+令牌状态更新走 `PUT /api/token/?status_only=true` + `{"id","status"}`。
+
+### 10.5 渠道明文 key 无法回取
+
+上游渠道列表/详情中 key 已被置空，`POST /api/channel/{id}/key` 返回 `403 SECURITY_PROOF_REQUIRED`。
+因此 BFF 用**进程内缓存 + 掩码**：
+- 本进程创建/更新过的渠道 → 可显示 `sk-abc****abcd`
+- BFF 启动前就存在的渠道 → 只能回落为 `****`
+
+因此 §4.2 的「key_masked 保留前 6 后 4」对**历史渠道**无法满足，前端不得依赖该字段判断 key 是否正确。
+
+### 10.6 httpx 必须关闭环境代理
+
+httpx 默认 `trust_env=True`，会读取 `HTTP_PROXY`/`HTTPS_PROXY`。
+本项目目标是局域网地址（如 `192.168.0.2`），走代理会得到错误结果。
+**`app/newapi.py` 的 httpx client 必须显式 `trust_env=False`。**
+
+### 10.7 字段语义说明
+
+| 字段 | 说明 |
+|---|---|
+| 令牌 `quota` / `quota_used` | 上游是**内部整数单位**（`remain_quota`/`used_quota`，`QuotaPerUnit=500000`），不是货币。契约示例中的 `100 / 12.34` 仅为形状示意；货币换算由前端决定 |
+| `overview.upstream.name` | 取「首个渠道 base_url 的 host」，无渠道时回落 New API host |
+| `overview.today` / `logs.stats` | 由 BFF 拉取消费日志后在服务端聚合（`page_size` 上限 500，超量会低估）。4 人自用足够 |
+| `system.options` | 返回 `{key: value}` 字典；脱敏按「key 后缀为 secret/key/password/token/cert」判定 |
+
+### 10.8 未定义的细节（前端按宽松方式处理即可）
+
+- `/channels/{id}/test` 的 `model` 省略/为空 → BFF 取渠道首个模型
+- 令牌 `expired_days`（相对）与 `expired_time`（绝对）并存时，前端以 `expired_time` 为准
+- 分页 `size` 上限建议 100，前端不应请求更大的值
