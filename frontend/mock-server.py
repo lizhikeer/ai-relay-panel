@@ -107,6 +107,7 @@ def seed_channels():
             "status_text": "启用" if status == 1 else "禁用",
             "priority": prio,
             "weight": weight,
+            "auto_ban": True,
             "group": group,
             "models": models,
             "model_count": len(models),
@@ -116,6 +117,10 @@ def seed_channels():
             "last_test_latency_ms": lat if ok else 0,
             "key_masked": "sk-abcd****wxyz",
         })
+    for ch in out:
+        if ch["id"] == 7:
+            # 演示：额度耗尽被上游自动禁用（面板 status 仍为 0，用 status_text 区分原因）
+            ch["status_text"] = "自动禁用"
     return out
 
 
@@ -371,7 +376,12 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_ok(CHANNEL_TYPES)
 
         if path == "/panel-api/channels/models":
+            if q.get("type"):
+                return self.send_ok(self._models_by_type(q.get("type")))
             return self.send_ok(MODELS)
+
+        if path.startswith("/panel-api/tokens/") and path.endswith("/key"):
+            return self._token_key(self._mid_int(path))
 
         if path == "/panel-api/channels":
             return self._channels_list(q)
@@ -442,6 +452,9 @@ class Handler(BaseHTTPRequestHandler):
 
         if path == "/panel-api/channels":
             return self._channel_create(body)
+
+        if path == "/panel-api/channels/reorder":
+            return self._channel_reorder(body)
 
         if path.startswith("/panel-api/channels/") and path.endswith("/status"):
             cid = self._mid_int(path)
@@ -549,6 +562,58 @@ class Handler(BaseHTTPRequestHandler):
             "items": items[start:start + size],
             "total": total, "page": page, "size": size,
         })
+
+    def _models_by_type(self, tstr):
+        """按协议聚合「启用中」渠道实际挂载的模型（契约 §4.6）。"""
+        try:
+            want = int(tstr)
+        except (TypeError, ValueError):
+            return MODELS
+        out, seen = [], set()
+        for ch in CHANNELS:
+            if ch["type"] != want or ch["status"] != 1:
+                continue
+            for m in ch["models"]:
+                if m not in seen:
+                    seen.add(m)
+                    out.append(m)
+        return [{"id": m, "owned_by": ""} for m in out]
+
+    def _token_key(self, tid):
+        """按需返回明文的 mock 密钥（契约 §5.1）。"""
+        for t in TOKENS:
+            if t["id"] == tid:
+                return self.send_ok({"id": tid, "key": "sk-mock%s0000" % (str(tid) * 4)})
+        return self.send_biz_fail("令牌不存在")
+
+    def _channel_reorder(self, body):
+        """按组内顺序写回优先级（契约 §4.7）。"""
+        groups = (body or {}).get("groups") or []
+        if not groups:
+            return self.send_biz_fail("groups 不能为空")
+
+        by_id = {c["id"]: c for c in CHANNELS}
+        plan, seen = [], set()
+        for g in groups:
+            ids = g.get("ids") or []
+            total = len(ids)
+            for idx, cid in enumerate(ids):
+                if cid in seen:
+                    return self.send_biz_fail("渠道 %s 在请求中重复出现" % cid)
+                ch = by_id.get(cid)
+                if not ch:
+                    return self.send_biz_fail("渠道 %s 不存在" % cid)
+                if ch["type"] != g.get("type"):
+                    return self.send_biz_fail(
+                        "渠道 %s 的类型（%s）与所在分组（%s）不一致" % (cid, ch["type"], g.get("type")))
+                seen.add(cid)
+                plan.append((cid, total - idx))
+
+        updated = []
+        for cid, prio in plan:
+            by_id[cid]["priority"] = prio
+            updated.append({"id": cid, "priority": prio})
+        return self.send_ok({"updated": updated})
 
     def _channel_create(self, body):
         global _next_channel_id
