@@ -555,8 +555,21 @@ Authorization: Bearer sk-xxx   或   x-api-key: sk-xxx
 
 - 元数据**进程内缓存**，到期后台刷新；失败沿用旧缓存
 - Caddy 的两个 upstream 顺序为 `127.0.0.1:18080`（BFF）→ `127.0.0.1:3000`（New API），
-  `lb_policy first` + `fail_duration 30s`：**BFF 挂掉时自动回落到原生 `/v1/models`**，
-  模型清单不会因为增强功能而整体不可用
+  `lb_policy first` + `fail_duration 30s`。
+- **2026-10-12 实测的降级行为**（停掉 BFF 容器实测）：
+
+  | 状态 | 结果 |
+  |---|---|
+  | BFF 正常 | `200`，108 模型，**76 个带 `context_length`** |
+  | BFF 刚挂 | **第 1 个请求 502**（Caddy 靠它才发现故障） |
+  | BFF 挂（其后） | `200`，回落到 New API 原生列表（**无** `context_length`） |
+  | BFF 恢复后 ≤30s | 仍走回落（`fail_duration` 未过期）；之后自动回到增强版 |
+
+  > 即：**最坏情况只会损失「第一个探测到故障的请求」**，模型清单本身不会整体不可用。
+  > 之所以不用主动健康检查（`health_uri`）：两个 upstream 是异构服务，
+  > BFF 的 `/panel-api/system/health` 在 New API 上不存在，统一探活会把 New API 误判为不健康。
+- `/v1/models` 不在推理关键路径上（对话/补全走 `/v1/chat/completions`、`/v1/messages`，
+  始终直连 New API），因此上述降级窗口可以接受。
 
 ### 11.4 关于「思考档位」与「自定义上下文长度」
 
