@@ -24,7 +24,6 @@
 #
 # ⚠️ 不要给 SPA 加 Caddy basic_auth（历史教训）：只保护 / 会导致 SPA 加载/跳转失败，
 #    保护全部路径则每次跳转都要重新认证。登录保护交给应用自身（BFF / New API）。
-
 {
 	auto_https disable_redirects
 }
