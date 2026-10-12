@@ -492,3 +492,78 @@ httpx 默认 `trust_env=True`，会读取 `HTTP_PROXY`/`HTTPS_PROXY`。
 - `/channels/{id}/test` 的 `model` 省略/为空 → BFF 取渠道首个模型
 - 令牌 `expired_days`（相对）与 `expired_time`（绝对）并存时，前端以 `expired_time` 为准
 - 分页 `size` 上限建议 100，前端不应请求更大的值
+
+---
+
+## 11. 出口模型清单（增强版 `/v1/models`）
+
+> ⚠️ 本接口**不在 `/panel-api` 前缀下**，它属于客户端出口 `/v1`，
+> 由 **Caddy 单独分流**到 BFF（其余 `/v1*` 仍直连 New API）。
+> 见 `Caddyfile` 里的 `handle /v1/models`。
+
+### 11.1 背景（2026-10-12 实测）
+
+New API 自己生成的 `/v1/models` 只返回：
+
+```json
+{ "id": "glm-5", "object": "model", "created": 1626777600, "owned_by": "openai" }
+```
+
+而**上游业务网关**（`tokendance.space/gateway/v1/models`，实测**免鉴权**）其实提供了完整能力元数据：
+
+```json
+{ "id": "glm-5", "name": "Z.ai: GLM 5", "context_length": 200000,
+  "description": "……", "supported_protocols": ["openai:chat-completions", "anthropic:messages"] }
+```
+
+New API 把这些字段**全丢了** → 客户端（Cherry Studio / LibreChat / 各类 agent）
+因此无法自动识别**上下文长度**。本接口就是为了补回这些元数据。
+
+### 11.2 行为
+
+```
+GET /v1/models          （必须带 API key，与原来一致）
+Authorization: Bearer sk-xxx   或   x-api-key: sk-xxx
+```
+
+处理顺序：
+
+1. BFF 用**请求原样的** `Authorization` / `x-api-key` 调 New API `/v1/models` ——
+   **鉴权、计费、限流语义完全不变**；非 200 时**状态码与响应体原样透传**（无效 key 依旧 401/403）
+2. 200 时，把上游元数据合并进每个模型对象（**仅补空缺，不覆盖**已有字段）：
+   `context_length`、`supported_protocols`、`description`、`name`
+3. 上游元数据拉取失败 → **原样返回** New API 的响应（客户端无感）
+
+返回结构仍是标准 OpenAI 形状，只是每个模型多了上述字段：
+
+```json
+{ "object": "list", "data": [
+  { "id": "glm-5", "object": "model", "created": 1626777600, "owned_by": "openai",
+    "supported_endpoint_types": ["openai"],
+    "context_length": 200000,
+    "supported_protocols": ["openai:chat-completions", "anthropic:messages"],
+    "description": "……", "name": "Z.ai: GLM 5" }
+] }
+```
+
+### 11.3 配置与降级
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `UPSTREAM_MODELS_URL` | `https://tokendance.space/gateway/v1/models` | 上游模型清单地址 |
+| `MODELS_META_TTL` | `600` | 元数据进程内缓存秒数 |
+
+- 元数据**进程内缓存**，到期后台刷新；失败沿用旧缓存
+- Caddy 的两个 upstream 顺序为 `127.0.0.1:18080`（BFF）→ `127.0.0.1:3000`（New API），
+  `lb_policy first` + `fail_duration 30s`：**BFF 挂掉时自动回落到原生 `/v1/models`**，
+  模型清单不会因为增强功能而整体不可用
+
+### 11.4 关于「思考档位」与「自定义上下文长度」
+
+- **思考档位是请求参数，不是模型属性**，因此不出现在模型清单里。上游支持：
+  `reasoning_effort`（`none` 关闭、`low`/`medium`/`high` 开启）、
+  `thinking: {"type":"disabled"}` / `{"type":"enabled","budget_tokens":N}`。
+  实测经本出口**可正常透传**（`enable_thinking` 不透传，勿用）。
+  档位梯度仅在 `glm-5` 上明显，`deepseek-v4-pro` / `qwen3.7-max` 基本只认开/关。
+- **上下文长度不可自定义** —— 它是模型固有属性，硬改会 400；
+  本接口只是把真实值**如实告知**客户端。真正可自定义的是**输出上限** `max_tokens`。

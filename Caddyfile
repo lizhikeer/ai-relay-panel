@@ -43,6 +43,22 @@
 :8443 {
 	tls /certs/91666.icu.pem /certs/91666.icu.key
 
+	# --- 出口模型清单：交给 BFF 补全能力元数据 ---
+	# 2026-10-12: New API 自己生成的 /v1/models 只有 id/object/created/owned_by，
+	#   把上游的 context_length / supported_protocols / description 全丢了 ——
+	#   客户端因此无法自动识别上下文长度。BFF 接管后**鉴权仍原样透传 New API**，
+	#   只在 200 响应上合并上游元数据；元数据拿不到就原样返回（客户端无感）。
+	# 务必放在 @client_api 之前：Caddy 按路径具体度排序，/v1/models 比 /v1/* 更具体。
+	# 第二个 upstream 是**兜底**：BFF 挂掉时自动回落到 New API 原生 /v1/models。
+	handle /v1/models {
+		reverse_proxy 127.0.0.1:18080 127.0.0.1:3000 {
+			lb_policy first
+			fail_duration 30s
+			header_up X-Forwarded-Proto {scheme}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
 	# --- 客户端 API 出口：直连 New API 引擎 ---
 	# 覆盖 OpenAI(/v1/chat/completions)、Anthropic(/v1/messages)、Gemini(/v1beta)
 	@client_api path /v1 /v1/* /v1beta /v1beta/*

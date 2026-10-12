@@ -65,6 +65,13 @@ class Settings:
         self.listen_port = int(_get("LISTEN_PORT", "8080") or "8080")
         # 对 New API 的请求超时（秒）
         self.request_timeout = float(_get("NEWAPI_TIMEOUT", "10") or "10")
+        # 上游业务网关的模型清单（含 context_length / supported_protocols），
+        # 供 /v1/models 补全能力元数据；实测该地址**免鉴权**
+        self.upstream_models_url = str(
+            _get("UPSTREAM_MODELS_URL", "https://tokendance.space/gateway/v1/models")
+        )
+        # 上游模型元数据缓存时长（秒）——元数据几乎不变，10 分钟足够
+        self.models_meta_ttl = float(_get("MODELS_META_TTL", "600") or "600")
         # 面板 session 有效期：7 天，滑动续期
         self.session_ttl = 7 * 24 * 3600
         # cookie 是否要求 https；本机 http 联调默认 false，生产走 Caddy(=TLS) 可置 true

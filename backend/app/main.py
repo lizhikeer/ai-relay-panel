@@ -17,10 +17,10 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import config
+from . import config, model_meta
 from .newapi import close_client, get_client
 from .response import BusinessError, Unauthorized, UpstreamError, envelope
-from .routers import auth, channels, logs, overview, system, tokens, users
+from .routers import auth, channels, logs, overview, system, tokens, users, v1_models
 
 logging.basicConfig(
     level=logging.INFO,
@@ -62,6 +62,8 @@ async def lifespan(app: FastAPI):
     yield
 
     await close_client()
+    await model_meta.aclose()
+    await v1_models.aclose()
 
 
 app = FastAPI(title="ai-relay-panel BFF", version=config.settings.version, lifespan=lifespan)
@@ -116,6 +118,9 @@ app.include_router(tokens.router)
 app.include_router(users.router)
 app.include_router(logs.router)
 app.include_router(system.router)
+
+# 出口模型清单：/v1/models（由 Caddy 单独分流过来，非 /panel-api 前缀）
+app.include_router(v1_models.router)
 
 
 # --------------------------- 静态前端 --------------------------- #
