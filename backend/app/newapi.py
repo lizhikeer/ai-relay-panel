@@ -144,6 +144,8 @@ def map_channel(ch: dict, key_cache: dict | None = None) -> dict:
         "status_text": status_text,
         "priority": ch.get("priority") or 0,
         "weight": ch.get("weight") or 0,
+        # auto_ban=1 表示上游会在该渠道调用失败（含额度耗尽）时自动禁用它
+        "auto_ban": bool(ch.get("auto_ban")),
         "group": ch.get("group") or "",
         "models": models,
         "model_count": len(models),
@@ -421,6 +423,25 @@ class NewAPIClient:
         body = await self._json_request("GET", "/api/channel/models")
         return body.get("data") or []
 
+    async def all_channels(self, max_pages: int = 20) -> list[dict]:
+        """拉取**全部**渠道（翻页直到拿完）。
+
+        用于需要全量视图的场景：优先级排序、按协议聚合模型。
+        单页失败时向上抛 UpstreamError，由调用方决定降级。
+        """
+        out: list[dict] = []
+        page = 1
+        while page <= max_pages:
+            body = await self.list_channels(page, 100)
+            data = body.get("data") or {}
+            items = data.get("items") or []
+            out.extend(items)
+            total = data.get("total")
+            if not items or (total is not None and len(out) >= int(total)):
+                break
+            page += 1
+        return out
+
     async def probe_channel_create(self) -> tuple[bool | None, str]:
         """非破坏性探测渠道创建接口是否可用（不会真正创建渠道）。
 
@@ -511,6 +532,19 @@ class NewAPIClient:
         if not res.get("success"):
             raise BusinessError(f"删除失败：{res.get('message') or '未知错误'}")
         self._channel_key_cache.pop(cid, None)
+
+    async def set_channel_priority(self, cid: int, priority: int) -> None:
+        """只更新渠道优先级。
+
+        实测（rc.41）：`PUT /api/channel/` 用最小体 `{"id", "priority"}` 是**安全**的 ——
+        name/models/group/weight/auto_ban/status 均保持原值不变（已在临时渠道上验证）；
+        但**绝不能带 `status` 字段**，否则直接 `Invalid parameters`（见契约 §10.3）。
+        """
+        res = await self._json_request(
+            "PUT", "/api/channel/", json={"id": cid, "priority": int(priority)}
+        )
+        if not res.get("success"):
+            raise BusinessError(f"更新渠道 {cid} 优先级失败：{res.get('message') or '未知错误'}")
 
     async def set_channel_status(self, cid: int, status: int) -> None:
         # 面板 1=启用/0=禁用 -> New API 1=启用/2=禁用

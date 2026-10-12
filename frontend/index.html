@@ -183,6 +183,24 @@
             </table>
           </div>
         </div>
+
+        <div class="card">
+          <div class="card-header">
+            <div class="card-title">优先级排序</div>
+            <div class="card-actions">
+              <span class="muted" id="prio-status">按协议分别排序</span>
+              <button class="btn btn-outline btn-sm" id="prio-reset">↺ 撤销改动</button>
+              <button class="btn btn-primary btn-sm" id="prio-save" disabled>💾 保存排序</button>
+            </div>
+          </div>
+          <p class="board-tip">
+            同一协议内<b>从上到下</b>依次使用：<b>上方渠道未失败/未被禁用前，不会使用下方的渠道</b>。
+            渠道因额度耗尽被上游拒绝时，New API 会把它标记为「<span class="error-text">自动禁用</span>」，
+            流量随即落到下一个优先级；充值或换 key 后点「启用」即可恢复。
+            OpenAI 与 Anthropic 是两套独立协议，排序互不影响。
+          </p>
+          <div class="grid-2" id="prio-groups"></div>
+        </div>
       </section>
 
       <!-- ---------- 3. 令牌管理 ---------- -->

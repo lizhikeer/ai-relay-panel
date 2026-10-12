@@ -49,6 +49,22 @@ async def create_token(payload: TokenIn, _: dict = Depends(require_login)):
     return ok(result)
 
 
+@router.get("/{tid}/key")
+async def get_token_key(tid: int, _: dict = Depends(require_login)):
+    """按需取回令牌**明文 key**（契约 §5.1，供「快速开始」自动填入真实密钥）。
+
+    实测（rc.41）：上游 `POST /api/token/{id}/key` 对**任意已有令牌**都返回明文
+    （`token.GetFullKey()`），并不限于刚创建的那一次；列表/详情接口则恒为掩码。
+    上游存的 key 不带 `sk-` 前缀，这里统一补上。
+    """
+    key = await get_client().get_token_key(tid)
+    if not key:
+        return fail("无法取回该令牌的明文 key（上游接口未返回）")
+    if not key.startswith("sk-"):
+        key = "sk-" + key
+    return ok({"id": tid, "key": key})
+
+
 @router.put("/{tid}")
 async def update_token(tid: int, payload: TokenIn, _: dict = Depends(require_login)):
     data = await get_client().update_token(tid, payload.model_dump(exclude_none=True))

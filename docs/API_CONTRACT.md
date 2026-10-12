@@ -165,6 +165,7 @@
       "status_text": "启用",
       "priority": 0,
       "weight": 1,
+      "auto_ban": true,
       "group": "default",
       "models": ["spark-x2.5-4b"],
       "model_count": 1,
@@ -237,8 +238,36 @@
 |---|---|
 | `GET /panel-api/channels/types` | `[{ "id": 1, "name": "OpenAI" }, { "id": 14, "name": "Anthropic" }, ...]` |
 | `GET /panel-api/channels/models` | `[{ "id": "spark-x2.5-4b", "owned_by": "..." }]` |
+| `GET /panel-api/channels/models?type=1` | 同上结构，但只含**该类型且启用中**渠道实际挂载的模型（去重，保持渠道内顺序） |
 
 > 已知映射（实测）：`1`=OpenAI、`14`=Anthropic。
+> 带 `type` 的用法供「快速开始」按协议给出真正可用的候选；不带 `type` 时保持原行为（上游全量模型）。
+
+### 4.7 优先级排序（按协议批量写回）
+
+`POST /panel-api/channels/reorder`
+
+```json
+{
+  "groups": [
+    { "type": 1,  "ids": [15, 13, 14] },
+    { "type": 14, "ids": [18, 16, 17] }
+  ]
+}
+```
+
+成功 `data: { "updated": [ { "id": 15, "priority": 3 }, { "id": 13, "priority": 2 }, ... ] }`
+
+语义与约束：
+
+- **组内第 1 个 → 优先级最高**；组内第 n 个 → 优先级 `1`（BFF 按 `n - index` 写回）
+- 上游 New API 语义：`priority` **越大越优先**；**同一协议内，高优先级渠道未失败/未被禁用前不会使用低优先级渠道**
+- 渠道因额度耗尽被上游拒绝时，`auto_ban=1` 会让 New API 把它置为 `status=3`（**自动禁用**），
+  流量随即落到下一个优先级 —— 这就是「额度用完自动禁用 + 高优先级优先」的落地机制
+- **OpenAI（type 1）与 Anthropic（type 14）是两套独立协议，优先级互不影响**，因此按 type 分组提交
+- 校验（防止误排）：`id` 必须存在、类型必须与所在组 `type` 一致、不得重复出现；
+  违反时返回 `200 + success:false`
+- 未出现在请求中的渠道**不受影响**（不会被动改优先级）
 
 ---
 
@@ -247,6 +276,7 @@
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/panel-api/tokens?page=&size=` | 列表 |
+| `GET` | `/panel-api/tokens/{id}/key` | **按需取回明文 key**（见 §5.1） |
 | `POST` | `/panel-api/tokens` | 创建 |
 | `PUT` | `/panel-api/tokens/{id}` | 更新 |
 | `DELETE` | `/panel-api/tokens/{id}` | 删除 |
@@ -283,16 +313,33 @@
 { "success": true, "message": "", "data": { "id": 12, "key": "sk-4d5e6f...(48位)" } }
 ```
 
-> ⚠️ **一次性明文 key（2026-10-10 新增）**
+> ⚠️ **创建时的明文 key 回显（2026-10-10 新增 / 2026-10-12 修订）**
 > 上游 New API 的 `POST /api/token/` **既不返回令牌 id 也不返回明文 key**，且
 > 列表/详情一律只回掩码（`MaskTokenKey`，形如 `lX5l**********GrzF`）。
 > BFF 在创建后按 `name` 定位新令牌，再调 `POST /api/token/{id}/key`
-> （上游返回 `token.GetFullKey()`）取回明文，**随创建响应返回这一次**。
+> （上游返回 `token.GetFullKey()`）取回明文，随创建响应返回。
 >
 > - `data.id`：新建令牌 id（可能为 `null`，表示未能定位）
 > - `data.key`：`sk-` 前缀 + 48 位完整密钥（可能为 `null`，取回失败时）
-> - **除本接口外，任何接口都不会返回明文**；`GET /tokens` 的 `key_masked` 恒为掩码
-> - 前端须在创建成功后立即弹窗提示用户复制保存（关闭后不可再取）
+> - `GET /tokens` 的 `key_masked` **恒为掩码**，列表不泄露明文
+> - 前端仍应在创建成功后弹窗提示用户复制保存
+
+### 5.1 按需取回明文 key
+
+`GET /panel-api/tokens/{id}/key`
+
+```json
+{ "success": true, "message": "", "data": { "id": 7, "key": "sk-pMks...(48位)" } }
+```
+
+> **2026-10-12 实测更正**：此前认为上游明文**仅创建那一次**可取 —— 实际上
+> `POST /api/token/{id}/key` 对**任意已有令牌**都会返回明文（`token.GetFullKey()`），
+> 只是列表/详情接口恒为掩码。因此本接口可随时取回。
+>
+> - 仅供「快速开始」在弹窗内自动填入真实密钥；失败时返回 `200 + success:false`，
+>   前端降级为 `YOUR_API_KEY` 占位符
+> - ⚠️ 这是**管理面接口**（需登录），会通过网络传输明文 key —— 面板始终在 HTTPS 下访问。
+>   若日后要收紧，可在 BFF 侧改为仅创建后 N 分钟内可取。
 
 ---
 
@@ -410,6 +457,11 @@ BFF 调用时**必须带尾斜杠**，否则可能拿到 307 空响应体。
 BFF 更新令牌时必须**先取回原值再合并**。
 渠道更新在 `key` 留空时不下发该字段（契合 §9.4）。
 令牌状态更新走 `PUT /api/token/?status_only=true` + `{"id","status"}`。
+
+> 补充（2026-10-12 实测）：渠道的 `PUT /api/channel/` 用**最小体 `{"id","priority"}`**
+> 只改优先级，其它字段（name/models/group/weight/auto_ban/status/key）**均保持原值不变**
+> —— 已在临时渠道上建→改→读回→删 全流程验证。可安全用于批量排序（§4.7）。
+> 仍然禁止在 body 里带 `status`（见 §10.3）。
 
 ### 10.5 渠道明文 key 无法回取
 

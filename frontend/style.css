@@ -455,6 +455,78 @@ input[type="checkbox"] { accent-color: var(--accent-blue); }
 .key-box .form-control { flex: 1 1 auto; min-width: 0; }
 .key-box .btn { flex: 0 0 auto; }
 
+/* ---------- 渠道优先级排序面板 ---------- */
+.board-tip {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.8;
+  margin-bottom: 12px;
+}
+.board-tip b { color: var(--text-primary); }
+.board-tip .error-text { color: var(--status-red); }
+
+.prio-group {
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+.prio-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.prio-list { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+
+.prio-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.prio-rank {
+  flex: 0 0 auto;
+  width: 18px;
+  text-align: center;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.prio-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.prio-val { flex: 0 0 auto; font-size: 11px; color: var(--text-muted); }
+
+.prio-move { flex: 0 0 auto; display: flex; gap: 4px; }
+.prio-move .btn-sm { padding: 2px 9px; line-height: 1.4; }
+
+.prio-empty { color: var(--text-muted); font-size: 12px; padding: 6px 2px; }
+
+/* ---------- 令牌「快速开始」 ---------- */
+.qs-text {
+  min-height: 220px;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+  line-height: 1.6;
+}
+
 /* ---------- 加载动画 ---------- */
 .spinner {
   display: inline-block;

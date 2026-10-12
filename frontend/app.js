@@ -12,6 +12,15 @@
   var LOGS_INTERVAL = 5000;      // 调用日志：5s
   var TAB_IDS = ['tab-dashboard', 'tab-channels', 'tab-tokens', 'tab-logs', 'tab-system'];
 
+  /* 对外出口的规范地址（「快速开始」片段里给客户端用） */
+  var QUICKSTART_BASE = 'https://api.91666.icu:8443';
+
+  /* 面板要「分别排序 / 分别给快速开始」的两种协议（值 = New API channel type） */
+  var PROTOCOLS = [
+    { type: 1, name: 'OpenAI 协议', desc: 'OpenAI SDK / 各类 OpenAI 兼容客户端' },
+    { type: 14, name: 'Anthropic 协议', desc: 'Claude Code / Anthropic SDK' }
+  ];
+
   /* ---------------- 全局状态 ---------------- */
   var state = {
     username: '',
@@ -19,6 +28,8 @@
     overview: null,
     channels: { items: [], total: 0, page: 1, size: 50, keyword: '', status: '' },
     channelTypes: [],
+    prio: { groups: [], dirty: false },
+    modelCache: {},
     tokens: { items: [], total: 0, page: 1, size: 100 },
     logs: { items: [], total: 0, page: 1, size: 50, type: '', keyword: '' },
     logsPaused: false,
@@ -274,7 +285,7 @@
   function loadTab(tabId) {
     switch (tabId) {
       case 'tab-dashboard': refreshOverview(); break;
-      case 'tab-channels': loadChannels(); break;
+      case 'tab-channels': refreshChannelViews(); break;
       case 'tab-tokens': loadTokens(); break;
       case 'tab-logs': loadLogs(); loadLogStats(); break;
       case 'tab-system': loadSystem(); break;
@@ -560,7 +571,7 @@
       .then(function (body) {
         if (body.success) {
           toast('已' + label + '渠道「' + ch.name + '」', 'success');
-          loadChannels();
+          refreshChannelViews();
           refreshOverview(true);
         }
       })
@@ -575,7 +586,7 @@
         return api('/channels/' + ch.id, { method: 'DELETE' }).then(function (body) {
           if (body.success) {
             toast('渠道已删除', 'success');
-            loadChannels();
+            refreshChannelViews();
             refreshOverview(true);
           }
         });
@@ -665,7 +676,7 @@
           if (body.success) {
             toast(isEdit ? '渠道已更新' : '渠道已创建', 'success');
             closeModal();
-            loadChannels();
+            refreshChannelViews();
             refreshOverview(true);
           }
           // 失败时 api() 已 toast（如 rc.41 的已知缺陷），保留弹窗供修改
@@ -688,6 +699,186 @@
       input.focus();
     }
     if (errBox) { errBox.textContent = msg; errBox.hidden = false; }
+  }
+
+  /* ---------------- 渠道优先级排序（按协议分组） ----------------
+   * 语义：同协议内 priority 越大越优先；高优先级渠道未失败/未被禁用前不会使用低优先级的。
+   * 组内第 1 个 = 最高优先级，保存时批量写回 priority（N, N-1, ..., 1）。 */
+
+  function refreshChannelViews() {
+    return Promise.all([loadChannels(), loadPriorityBoard()]);
+  }
+
+  function protocolName(type, fallback) {
+    for (var i = 0; i < PROTOCOLS.length; i++) {
+      if (Number(PROTOCOLS[i].type) === Number(type)) return PROTOCOLS[i].name;
+    }
+    return fallback || ('类型 ' + type);
+  }
+
+  function protoIndex(type) {
+    for (var i = 0; i < PROTOCOLS.length; i++) {
+      if (Number(PROTOCOLS[i].type) === Number(type)) return i;
+    }
+    return PROTOCOLS.length; // 未知类型排在已知协议之后
+  }
+
+  function buildPriorityGroups(items) {
+    var byType = {};
+    var order = [];
+    items.forEach(function (ch) {
+      var t = Number(ch.type);
+      if (!byType[t]) {
+        byType[t] = { type: t, name: protocolName(t, ch.type_name), channels: [] };
+        order.push(t);
+      }
+      byType[t].channels.push(ch);
+    });
+    order.sort(function (a, b) {
+      var d = protoIndex(a) - protoIndex(b);
+      return d !== 0 ? d : a - b;
+    });
+    return order.map(function (t) {
+      var g = byType[t];
+      g.channels.sort(function (a, b) {
+        var d = (Number(b.priority) || 0) - (Number(a.priority) || 0);
+        return d !== 0 ? d : (Number(a.id) || 0) - (Number(b.id) || 0);
+      });
+      return g;
+    });
+  }
+
+  function loadPriorityBoard() {
+    var box = $('#prio-groups');
+    if (box) box.innerHTML = '<div class="table-state"><span class="spinner"></span>加载中…</div>';
+    return api('/channels?page=1&size=500', { silent: true })
+      .then(function (body) {
+        if (!body.success) {
+          if (box) box.innerHTML = '<div class="table-state error-text">' + esc(body.message || '加载失败') + '</div>';
+          return;
+        }
+        state.prio.groups = buildPriorityGroups((body.data && body.data.items) || []);
+        state.prio.dirty = false;
+        renderPriorityBoard();
+      })
+      .catch(function (e) {
+        if (box) box.innerHTML = '<div class="table-state error-text">' + esc(e.message) + '</div>';
+      });
+  }
+
+  function renderPriorityBoard() {
+    var box = $('#prio-groups');
+    if (!box) return;
+    var groups = state.prio.groups;
+
+    if (!groups.length) {
+      box.innerHTML = '<div class="table-state">暂无渠道，先去上面的列表新建一个</div>';
+      updatePrioStatus();
+      return;
+    }
+
+    box.innerHTML = groups.map(function (g) {
+      var rows = g.channels.map(function (ch, idx) {
+        var enabled = ch.status === 1;
+        var badge = '<span class="badge ' + (enabled ? 'badge-green' : 'badge-red') + '">' +
+          esc(ch.status_text || (enabled ? '启用' : '禁用')) + '</span>';
+        return '<li class="prio-item" data-cid="' + esc(ch.id) + '" data-gtype="' + esc(g.type) + '">' +
+          '<span class="prio-rank">' + (idx + 1) + '</span>' +
+          '<span class="prio-name">' + esc(ch.name) + '</span>' +
+          badge +
+          '<span class="prio-val mono">P' + esc(ch.priority != null ? ch.priority : 0) + '</span>' +
+          '<span class="prio-move">' +
+            '<button class="btn btn-outline btn-sm" data-act="up" title="上移"' +
+              (idx === 0 ? ' disabled' : '') + '>↑</button>' +
+            '<button class="btn btn-outline btn-sm" data-act="down" title="下移"' +
+              (idx === g.channels.length - 1 ? ' disabled' : '') + '>↓</button>' +
+          '</span>' +
+          '</li>';
+      }).join('') || '<li class="prio-empty">该协议下暂无渠道</li>';
+
+      return '<div class="prio-group">' +
+        '<div class="prio-group-head">' + esc(g.name) +
+          '<span class="muted">（' + g.channels.length + ' 条）</span></div>' +
+        '<ul class="prio-list">' + rows + '</ul>' +
+        '</div>';
+    }).join('');
+
+    updatePrioStatus();
+  }
+
+  function updatePrioStatus() {
+    var el = $('#prio-status');
+    if (el) el.textContent = state.prio.dirty ? '有未保存的改动' : '按协议分别排序';
+    var btn = $('#prio-save');
+    if (btn) btn.disabled = !state.prio.dirty;
+    var reset = $('#prio-reset');
+    if (reset) reset.disabled = !state.prio.dirty;
+  }
+
+  function handlePriorityClick(ev) {
+    var btn = ev.target.closest ? ev.target.closest('button[data-act]') : null;
+    if (!btn || btn.disabled) return;
+    var li = btn.closest('.prio-item');
+    if (!li) return;
+
+    var gtype = Number(li.getAttribute('data-gtype'));
+    var cid = Number(li.getAttribute('data-cid'));
+    var act = btn.getAttribute('data-act');
+
+    var g = null;
+    for (var i = 0; i < state.prio.groups.length; i++) {
+      if (Number(state.prio.groups[i].type) === gtype) g = state.prio.groups[i];
+    }
+    if (!g) return;
+
+    var idx = -1;
+    for (var j = 0; j < g.channels.length; j++) {
+      if (Number(g.channels[j].id) === cid) idx = j;
+    }
+    if (idx < 0) return;
+
+    var target = (act === 'up') ? idx - 1 : idx + 1;
+    if (target < 0 || target >= g.channels.length) return;
+
+    var tmp = g.channels[idx];
+    g.channels[idx] = g.channels[target];
+    g.channels[target] = tmp;
+
+    state.prio.dirty = true;
+    renderPriorityBoard();
+  }
+
+  function savePriority() {
+    if (!state.prio.dirty) return;
+
+    var groups = state.prio.groups
+      .filter(function (g) { return g.channels.length > 0; })
+      .map(function (g) {
+        return {
+          type: g.type,
+          ids: g.channels.map(function (c) { return Number(c.id); })
+        };
+      });
+
+    var btn = $('#prio-save');
+    btn.disabled = true;
+    var original = btn.textContent;
+    btn.textContent = '保存中…';
+
+    api('/channels/reorder', { method: 'POST', body: { groups: groups } })
+      .then(function (body) {
+        if (body.success) {
+          var n = ((body.data && body.data.updated) || []).length;
+          toast('排序已保存（更新 ' + n + ' 条渠道优先级）', 'success');
+          loadPriorityBoard();
+        }
+      })
+      .catch(function (e) { toast(e.message, 'error'); })
+      .then(function () {
+        btn.disabled = false;
+        btn.textContent = original;
+        updatePrioStatus();
+      });
   }
 
   /* ---------------- 令牌管理 ---------------- */
@@ -739,6 +930,7 @@
         '<td class="num">' + rest + '</td>' +
         '<td>' + (tk.accessed_at ? esc(fmtTime(tk.accessed_at)) : '<span class="muted">—</span>') + '</td>' +
         '<td><div class="cell-actions">' +
+          '<button class="btn btn-primary btn-sm" data-act="quick">🚀 快速开始</button>' +
           '<button class="btn btn-outline btn-sm" data-act="edit">✏️ 编辑</button>' +
           '<button class="btn ' + (enabled ? 'btn-warning' : 'btn-success') + ' btn-sm" data-act="toggle">' +
             (enabled ? '⏹️ 禁用' : '⚡ 启用') + '</button>' +
@@ -768,6 +960,7 @@
     if (act === 'edit') openTokenModal(tk);
     else if (act === 'toggle') toggleTokenStatus(tk);
     else if (act === 'del') deleteToken(tk);
+    else if (act === 'quick') openQuickStart(tk);
   }
 
   function toggleTokenStatus(tk) {
@@ -909,6 +1102,141 @@
     } else {
       fallback();
     }
+  }
+
+  /* ---------------- 令牌「快速开始」 ----------------
+   * 一键生成可直接交给 agent 的调用片段：协议（OpenAI / Anthropic）+ 模型可下拉选择，
+   * 明文 key 由 /tokens/{id}/key 按需取回（上游对已有令牌同样返回明文，见契约 §5.1）。 */
+
+  function openQuickStart(tk) {
+    if (!tk) return;
+    // key 可能取不到（上游异常）：此时用占位符降级，不阻塞弹窗
+    api('/tokens/' + tk.id + '/key', { silent: true })
+      .then(function (body) {
+        var key = (body.success && body.data && body.data.key) || '';
+        showQuickStartModal(tk, key);
+      })
+      .catch(function () { showQuickStartModal(tk, ''); });
+  }
+
+  function showQuickStartModal(tk, key) {
+    var protoOptions = PROTOCOLS.map(function (p) {
+      return '<option value="' + esc(p.type) + '">' + esc(p.name) + '</option>';
+    }).join('');
+
+    var body = '' +
+      '<div class="form-row">' +
+        '<div class="form-group"><label class="form-label">协议</label>' +
+          '<select class="form-control" id="qs-proto">' + protoOptions + '</select>' +
+          '<div class="form-help">OpenAI 与 Anthropic 用不同的端点与鉴权头</div></div>' +
+        '<div class="form-group"><label class="form-label">模型</label>' +
+          '<select class="form-control" id="qs-model"><option value="">加载中…</option></select>' +
+          '<div class="form-help">只列出该协议下<b>启用中</b>渠道实际挂载的模型</div></div>' +
+      '</div>' +
+      (key ? '' : '<div class="field-error">未能取回该令牌的明文 key，片段中以 ' +
+        '<code>YOUR_API_KEY</code> 占位，请自行替换。</div>') +
+      '<div class="form-group"><label class="form-label">快速开始片段（可直接整段交给 agent）</label>' +
+        '<textarea class="form-control qs-text" id="qs-text" rows="14" readonly></textarea></div>' +
+      '<p class="form-help">令牌：<b>' + esc(tk.name) + '</b>　·　base_url：' +
+        '<span class="mono">' + esc(QUICKSTART_BASE) + '/v1</span></p>';
+
+    var footer = '<button class="btn btn-outline" data-act="close">关闭</button>' +
+      '<button class="btn btn-primary" data-act="copy">📋 一键复制</button>';
+
+    openModal('快速开始 · ' + tk.name, body, footer, function (act) {
+      if (act === 'copy') {
+        var el = $('#qs-text');
+        copyText(el ? el.value : '', '调用片段已复制，可直接粘贴给 agent');
+        return;
+      }
+      closeModal();
+    });
+
+    var protoSel = $('#qs-proto');
+    var modelSel = $('#qs-model');
+    var textEl = $('#qs-text');
+
+    function rebuild() {
+      textEl.value = buildQuickStart(Number(protoSel.value), modelSel.value, key || 'YOUR_API_KEY', tk);
+    }
+
+    protoSel.addEventListener('change', function () { fillQuickStartModels(protoSel.value, modelSel, rebuild); });
+    modelSel.addEventListener('change', rebuild);
+    fillQuickStartModels(protoSel.value, modelSel, rebuild);
+  }
+
+  function fillQuickStartModels(proto, sel, done) {
+    var cached = state.modelCache[proto];
+    if (cached && cached.length) { renderModelOptions(cached, sel); done(); return; }
+
+    sel.innerHTML = '<option value="">加载中…</option>';
+    api('/channels/models?type=' + encodeURIComponent(proto), { silent: true })
+      .then(function (body) {
+        var items = (body.success && Array.isArray(body.data)) ? body.data : [];
+        var ids = items.map(function (m) { return m.id; }).filter(Boolean);
+        state.modelCache[proto] = ids;
+        renderModelOptions(ids, sel);
+        done();
+      })
+      .catch(function () {
+        sel.innerHTML = '<option value="">（模型列表加载失败）</option>';
+        done();
+      });
+  }
+
+  function renderModelOptions(ids, sel) {
+    if (!ids.length) {
+      sel.innerHTML = '<option value="">（该协议下暂无可用模型）</option>';
+      return;
+    }
+    sel.innerHTML = ids.map(function (id) {
+      return '<option value="' + esc(id) + '">' + esc(id) + '</option>';
+    }).join('');
+  }
+
+  /* 生成「快速开始」文本：注释头（给 agent 读）+ 可直接执行的 curl */
+  function buildQuickStart(protoType, model, key, tk) {
+    var base = QUICKSTART_BASE;
+    var isAnthropic = Number(protoType) === 14;
+    var m = model || 'MODEL';
+    var lines = [
+      '# ===== AI 中转站 · 快速开始（' + (isAnthropic ? 'Anthropic' : 'OpenAI') + ' 协议）=====',
+      '# base_url : ' + base + '/v1',
+      '# api_key  : ' + key,
+      '# model    : ' + m,
+      '# 令牌     : ' + ((tk && tk.name) || ''),
+      '#'
+    ];
+
+    if (isAnthropic) {
+      lines.push('# 适配 Claude Code / Anthropic SDK：');
+      lines.push('#   ANTHROPIC_BASE_URL = ' + base);
+      lines.push('#   ANTHROPIC_API_KEY  = ' + key);
+      lines.push('#   ANTHROPIC_MODEL    = ' + m);
+      lines.push('');
+      lines.push('curl ' + base + '/v1/messages \\');
+      lines.push('  -H "x-api-key: ' + key + '" \\');
+      lines.push('  -H "anthropic-version: 2023-06-01" \\');
+      lines.push('  -H "Content-Type: application/json" \\');
+      lines.push('  -d \'{');
+      lines.push('    "model": "' + m + '",');
+      lines.push('    "max_tokens": 1024,');
+      lines.push('    "messages": [{"role": "user", "content": "Hello!"}]');
+      lines.push('  }\'');
+    } else {
+      lines.push('# 适配 OpenAI SDK / 各类 OpenAI 兼容客户端：');
+      lines.push('#   base_url = ' + base + '/v1');
+      lines.push('#   api_key  = ' + key);
+      lines.push('');
+      lines.push('curl ' + base + '/v1/chat/completions \\');
+      lines.push('  -H "Authorization: Bearer ' + key + '" \\');
+      lines.push('  -H "Content-Type: application/json" \\');
+      lines.push('  -d \'{');
+      lines.push('    "model": "' + m + '",');
+      lines.push('    "messages": [{"role": "user", "content": "Hello!"}]');
+      lines.push('  }\'');
+    }
+    return lines.join('\n');
   }
 
   /* ---------------- 调用日志 ---------------- */
@@ -1135,6 +1463,15 @@
     });
     $('#channel-create').addEventListener('click', function () { openChannelModal(null); });
     $('#channels-body').addEventListener('click', handleChannelAction);
+
+    /* 渠道优先级排序面板 */
+    $('#prio-groups').addEventListener('click', handlePriorityClick);
+    $('#prio-save').addEventListener('click', savePriority);
+    $('#prio-reset').addEventListener('click', function () {
+      if (!state.prio.dirty) return;
+      toast('已撤销未保存的排序改动', 'info', 1800);
+      loadPriorityBoard();
+    });
 
     /* 令牌 */
     $('#token-refresh').addEventListener('click', loadTokens);
