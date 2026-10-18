@@ -150,6 +150,10 @@ def seed_tokens():
             "quota_used": used,
             "unlimited_quota": unlimited,
             "expired_time": -1,
+            "today_requests": tid * 7,
+            "today_input_tokens": tid * 4200,
+            "today_output_tokens": tid * 1100,
+            "today_tokens": tid * 5300,
             "created_at": _ts(days=30),
             "accessed_at": _ts(minutes=7),
         })
@@ -244,8 +248,9 @@ def overview_payload():
         "today": {
             "requests": len(today_logs) if today_logs else 1284,
             "tokens": 3510203,
-            "quota_spent": 12.34,
-            "quota_currency": "CNY",
+            "input_tokens": 2100000,
+            "output_tokens": 1410203,
+            "avg_tokens_per_request": 2733,
         },
         "upstream": {"name": "tokendance.space", "reachable": True, "latency_ms": 95},
         "panel": {"version": "0.1.0", "uptime_seconds": int(time.time()) - START_TS},
