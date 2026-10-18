@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
@@ -20,6 +21,7 @@ from typing import Any
 
 import httpx
 
+from . import pricing
 from .config import settings
 from .response import BusinessError, UpstreamError
 
@@ -211,11 +213,29 @@ def map_user(user: dict) -> dict:
     }
 
 
+def _log_cache_tokens(log: dict) -> int:
+    """从日志的 `other` JSON 里取缓存命中 token 数（缓存按 1/30 计价，影响金额）。"""
+    other = log.get("other")
+    if isinstance(other, dict):
+        return int(other.get("cache_tokens") or 0)
+    if isinstance(other, str) and other:
+        try:
+            parsed = json.loads(other)
+        except ValueError:
+            return 0
+        if isinstance(parsed, dict):
+            return int(parsed.get("cache_tokens") or 0)
+    return 0
+
+
 def map_log(log: dict) -> dict:
     ltype = log.get("type")
     channel_name = log.get("channel_name")
     if channel_name is None:
         channel_name = log.get("channel") or ""
+    prompt_tokens = int(log.get("prompt_tokens") or 0)
+    completion_tokens = int(log.get("completion_tokens") or 0)
+    cache_tokens = _log_cache_tokens(log)
     return {
         "id": log.get("id"),
         "created_at": int(log.get("created_at") or log.get("created_time") or 0),
@@ -225,9 +245,14 @@ def map_log(log: dict) -> dict:
         "token_name": log.get("token_name") or "",
         "model_name": log.get("model_name") or "",
         "channel_name": channel_name or "",
-        "prompt_tokens": log.get("prompt_tokens") or 0,
-        "completion_tokens": log.get("completion_tokens") or 0,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "cache_tokens": cache_tokens,
         "quota": log.get("quota") or 0,
+        # 按 DeepSeek 均价现算（契约 §3.1）；`quota` 是历史记账，旧倍率下会虚高
+        "cost_cny": round(
+            pricing.cost_cny(prompt_tokens, completion_tokens, cache_tokens, log.get("model_name")), 6
+        ),
         "latency_ms": int(log.get("use_time") or log.get("response_time") or 0),
         "is_stream": bool(log.get("is_stream")),
         "content": log.get("content") or "",
@@ -540,12 +565,71 @@ class NewAPIClient:
         实测（rc.41）：`PUT /api/channel/` 用最小体 `{"id", "priority"}` 是**安全**的 ——
         name/models/group/weight/auto_ban/status 均保持原值不变（已在临时渠道上验证）；
         但**绝不能带 `status` 字段**，否则直接 `Invalid parameters`（见契约 §10.3）。
+
+        ⚠️ 它只改 `channels.priority`，**不会**同步 `abilities` 表 —— 见 `fix_abilities()`。
         """
         res = await self._json_request(
             "PUT", "/api/channel/", json={"id": cid, "priority": int(priority)}
         )
         if not res.get("success"):
             raise BusinessError(f"更新渠道 {cid} 优先级失败：{res.get('message') or '未知错误'}")
+
+    async def fix_abilities(self) -> dict:
+        """重建 `abilities` 表（渠道-模型路由表）。
+
+        **为什么必须调**：New API 的路由读的是 `abilities`，不是 `channels`。
+        `PUT /api/channel/` 只写 `channels.priority`，`abilities` 里那些早先建的
+        行会保留旧值 —— 于是出现「面板显示优先级 3，实际按旧值随机」的假象。
+        2026-10-18 实测：6 个渠道在 `abilities` 里对 `deepseek-v4.1-flash-1017`
+        全是 `priority=1`，导致优先级形同虚设、请求被随机打到 Anthropic 渠道。
+
+        该接口 = 清空并重建 `abilities`（逐渠道按 `channels` 当前值写入），幂等。
+        """
+        res = await self._json_request("POST", "/api/channel/fix", json={})
+        if not res.get("success"):
+            raise BusinessError(f"重建 abilities 失败：{res.get('message') or '未知错误'}")
+        return res.get("data") or {}
+
+    async def sync_model_ratios(self) -> dict:
+        """把我们渠道上每个模型按 DeepSeek 均价写入三个倍率 option（契约 §3.1）。
+
+        未配价的模型会被 New API 按硬编码 37.5 计费（≈$75/M，高出两个数量级），
+        所以新增模型后必须重新同步一次（BFF 启动时会自动做一次）。
+
+        合并写入：只覆盖我们渠道里出现的模型名，上游内置的 200+ 条价格原样保留。
+        """
+        channels = await self.all_channels()
+        models = sorted(
+            {
+                m.strip()
+                for c in channels
+                for m in (c.get("models") or "").split(",")
+                if m.strip()
+            }
+        )
+        changed: dict[str, int] = {}
+        if not models:
+            return {"models": 0, "changed": changed}
+
+        opts = {o.get("key"): o.get("value") for o in await self.get_options()}
+        built = pricing.build_ratio_options(models)
+        for key, mapping in zip(("ModelRatio", "CompletionRatio", "CacheRatio"), built):
+            try:
+                current = json.loads(opts.get(key) or "{}")
+            except ValueError:
+                current = {}
+            if not isinstance(current, dict):
+                current = {}
+            merged = dict(current)
+            delta = 0
+            for name, value in mapping.items():
+                if merged.get(name) != value:
+                    merged[name] = value
+                    delta += 1
+            if delta:
+                await self.update_option(key, json.dumps(merged, ensure_ascii=False))
+            changed[key] = delta
+        return {"models": len(models), "changed": changed}
 
     async def set_channel_status(self, cid: int, status: int) -> None:
         # 面板 1=启用/0=禁用 -> New API 1=启用/2=禁用

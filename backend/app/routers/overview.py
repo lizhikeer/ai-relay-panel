@@ -7,6 +7,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends
 
+from .. import pricing
 from ..auth import require_login
 from ..config import settings
 from ..newapi import get_client, map_channel_abnormal
@@ -37,7 +38,8 @@ async def overview(_: dict = Depends(require_login)):
     tk_enabled = sum(1 for t in tokens if t.get("status") == 1)
 
     # --- 今日用量（从消费日志聚合）---
-    # 面板口径：只统计 token，不做金额换算（见契约 §3）
+    # 口径：token 原样统计；金额按 `pricing` 里的 DeepSeek 均价**从 token 现算**，
+    # 不用日志里的 quota 字段 —— 历史日志是按旧倍率(37.5)记的，直接加总会虚高。
     midnight = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
     now = int(time.time())
     log_data = (
@@ -49,10 +51,17 @@ async def overview(_: dict = Depends(require_login)):
     today_requests = 0
     today_input = 0
     today_output = 0
+    today_cost = 0.0
     for log in today_logs:
         today_requests += 1
         today_input += int(log.get("prompt_tokens") or 0)
         today_output += int(log.get("completion_tokens") or 0)
+        today_cost += pricing.cost_cny(
+            log.get("prompt_tokens"),
+            log.get("completion_tokens"),
+            log.get("cache_tokens"),
+            log.get("model_name"),
+        )
     today_tokens = today_input + today_output
     today_avg = int(round(today_tokens / today_requests)) if today_requests else 0
 
@@ -93,7 +102,11 @@ async def overview(_: dict = Depends(require_login)):
                 "input_tokens": today_input,
                 "output_tokens": today_output,
                 "avg_tokens_per_request": today_avg,
+                # 按 DeepSeek 均价从 token 现算（契约 §3.1），不读日志里的 quota 字段
+                "cost_cny": round(today_cost, 6),
+                "cost_currency": "CNY",
             },
+            "pricing": pricing.price_table(),
             "upstream": {
                 "name": upstream_name,
                 "reachable": reachable,

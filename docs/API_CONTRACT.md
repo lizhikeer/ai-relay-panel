@@ -120,7 +120,19 @@
       "tokens": 3510203,
       "input_tokens": 2100000,
       "output_tokens": 1410203,
-      "avg_tokens_per_request": 2733
+      "avg_tokens_per_request": 2733,
+      "cost_cny": 4.2183,
+      "cost_currency": "CNY"
+    },
+    "pricing": {
+      "currency": "CNY",
+      "unit": "per_1m_tokens",
+      "input": 2.0,
+      "output": 6.0,
+      "cache_hit": 0.0667,
+      "pro_multiplier": 3.0,
+      "usd_cny": 7.3,
+      "note": "DeepSeek 官方峰谷价按时段加权后的均价，不区分峰谷"
     },
     "upstream": {
       "name": "tokendance.space",
@@ -133,6 +145,36 @@
 ```
 
 > 字段缺失时给安全默认值（如 `0` / `[]`），**不要**返回 `null`，避免前端判空爆炸。
+
+### 3.1 计价口径：DeepSeek 均价（2026-10-18 起）
+
+**金额一律由 BFF 从 token 现算**（`backend/app/pricing.py`），**不读**日志里的 `quota` 字段 ——
+历史日志是按旧倍率记的，直接加总会虚高近三个数量级。
+
+价格 = DeepSeek 官方 2026-08-17 起的峰谷价，**按时段加权平均**（高峰 9-12 / 14-18 共 8 小时，
+其余 16 小时空闲），不区分峰谷：
+
+| 项目 | 高峰 | 空闲 | 加权均价（采用） |
+|---|---|---|---|
+| 输入（缓存未命中） | ¥3/M | ¥1.5/M | **¥2/M** |
+| 输出 | ¥9/M | ¥4.5/M | **¥6/M** |
+| 输入（缓存命中） | ¥0.1/M | ¥0.05/M | **¥0.0667/M**（= 输入的 1/30） |
+
+`deepseek-v4-pro*` 各项 ×3；其余模型**统一按 V4-Flash 均价**（简单口径）。
+
+计算式：`cost = (未命中输入×2 + 命中输入×0.0667 + 输出×6) / 1e6` ×（pro ? 3 : 1）
+
+**同步到 New API**：BFF 启动时会调 `sync_model_ratios()`，把同一份价格换算成三个 option 写回：
+
+| New API option | 值 | 说明 |
+|---|---|---|
+| `ModelRatio[<model>]` | `2.0 / (2×7.3) ≈ 0.136986` | 倍率 1 = $2/M；pro 为 0.410959 |
+| `CompletionRatio[<model>]` | `3` | 输出价 / 输入价 |
+| `CacheRatio[<model>]` | `1/30 ≈ 0.033333` | 缓存价 / 输入价 |
+
+> ⚠️ **不配倍率的模型会被 New API 按硬编码 `37.5` 计费**（≈$75/M，高出两个数量级）。
+> 所以新增模型后要重启一次 BFF（或触发启动流程）让倍率补齐。合并写入，只覆盖我们渠道里
+> 出现的模型名，上游内置的 200+ 条价格原样保留。
 
 ---
 
@@ -261,11 +303,20 @@
 
 语义与约束：
 
-- **组内第 1 个 → 优先级最高**；组内第 n 个 → 优先级 `1`（BFF 按 `n - index` 写回）
-- 上游 New API 语义：`priority` **越大越优先**；**同一协议内，高优先级渠道未失败/未被禁用前不会使用低优先级渠道**
+- **组内第 1 个 → 优先级最高**。数值规则（2026-10-18 起）：
+  - OpenAI（type 1）：正数 `n .. 1`
+  - 其它协议（Anthropic type 14 等）：**负数 `-1 .. -n`**
+  - 目的：New API 选渠道只看「分组 + 模型」，**不看入站协议**；OpenAI 与 Anthropic
+    类型渠道若同优先级就会随机互抢（实测 OpenAI 请求被 Anthropic 渠道接走，日志里出现
+    `·Anthropic`）。负数保证任何 OpenAI 渠道都排在 Anthropic 渠道之前，后者降为备用层。
+- ⚠️ **写完必须重建 `abilities` 表**：`PUT /api/channel/` 只改 `channels.priority`，
+  而路由真正读的是 `abilities`，不同步就会出现「面板显示优先级 3、实际按旧值随机」。
+  BFF 会自动调 `POST /api/channel/fix`（`NewAPIClient.fix_abilities()`），返回里带
+  `abilities: {rebuilt: true, ...}`；重建失败时会额外给 `warning`。
+- 上游 New API 语义：`priority` **越大越优先**；**同一模型内，高优先级渠道未失败/未被禁用前不会使用低优先级渠道**
 - 渠道因额度耗尽被上游拒绝时，`auto_ban=1` 会让 New API 把它置为 `status=3`（**自动禁用**），
   流量随即落到下一个优先级 —— 这就是「额度用完自动禁用 + 高优先级优先」的落地机制
-- **OpenAI（type 1）与 Anthropic（type 14）是两套独立协议，优先级互不影响**，因此按 type 分组提交
+- 两组仍按 type 分开调序（各自组内相对顺序独立），但**数值区间不重叠**：OpenAI 恒为正、其它恒为负
 - 校验（防止误排）：`id` 必须存在、类型必须与所在组 `type` 一致、不得重复出现；
   违反时返回 `200 + success:false`
 - 未出现在请求中的渠道**不受影响**（不会被动改优先级）
@@ -301,12 +352,14 @@
   "today_requests": 42,
   "today_input_tokens": 18000,
   "today_output_tokens": 6200,
-  "today_tokens": 24200
+  "today_tokens": 24200,
+  "today_cost_cny": 0.0728
 }
 ```
 
-> 🆕 **`today_*`（2026-10-18 新增）**：由 BFF 拉取**今日消费日志**按 `token_name` 聚合而来，
-> 用于面板「不看金额、只看 token」的口径。取不到日志时全部为 `0`（不影响列表）。
+> 🆕 **`today_*`（2026-10-18 新增）**：由 BFF 拉取**今日消费日志**按 `token_name` 聚合而来。
+> 取不到日志时全部为 `0`（不影响列表）。
+> `today_cost_cny` = 按 DeepSeek 均价从 token 现算的金额（§3.1），**不是**日志里的 `quota`。
 > ⚠️ 上游单页上限 500 条，日志量大时该统计会**低估**（本项目规模足够）。
 
 ### 5.2 面板不计量：新建令牌一律不限额度（2026-10-18）
@@ -393,7 +446,9 @@
       "channel_name": "TK-LzK-openai",
       "prompt_tokens": 23,
       "completion_tokens": 10,
-      "quota": 0.012,
+      "cache_tokens": 0,
+      "quota": 6551588,
+      "cost_cny": 0.000057,
       "latency_ms": 680,
       "is_stream": false,
       "content": ""
@@ -403,15 +458,20 @@
 }
 ```
 
+> `quota` 是 **New API 的历史记账**，2026-10-18 之前按错误倍率（37.5）记的，会虚高近三个数量级；
+> `cost_cny` 才是面板口径的金额（按 DeepSeek 均价从 token 现算，见 §3.1）。前端展示一律用 `cost_cny`。
+
 ### 7.2 统计
 
 `GET /panel-api/logs/stats?days=7`
 
 ```json
 { "success": true, "data": {
-    "daily": [ { "date": "2026-10-10", "requests": 1284, "tokens": 3510203, "quota": 12.34 } ],
-    "by_model": [ { "model_name": "deepseek-v4-flash", "requests": 800, "tokens": 2000000, "quota": 8.0 } ],
-    "by_channel": [ { "channel_name": "TK-LzK-openai", "requests": 640, "quota": 6.0 } ]
+    "daily": [ { "date": "2026-10-10", "requests": 1284, "tokens": 3510203, "cost_cny": 12.34 } ],
+    "by_model": [ { "model_name": "deepseek-v4-flash", "requests": 800, "tokens": 2000000, "cost_cny": 8.0 } ],
+    "by_channel": [ { "channel_name": "TK-LzK-openai", "requests": 640, "cost_cny": 6.0 } ],
+    "total_cost_cny": 12.34,
+    "currency": "CNY"
 } }
 ```
 

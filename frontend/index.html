@@ -113,9 +113,9 @@
               <div class="stat-sub" id="dash-upstream-sub">--</div>
             </div>
             <div class="stat-box">
-              <div class="stat-label">平均每请求</div>
-              <div class="stat-value" id="dash-tokens-today">--</div>
-              <div class="stat-sub">Tokens / 次</div>
+              <div class="stat-label">今日消费</div>
+              <div class="stat-value" id="dash-cost-value">--</div>
+              <div class="stat-sub" id="dash-cost-sub">按 DeepSeek 均价折算</div>
             </div>
             <div class="stat-box">
               <div class="stat-label">面板版本</div>
@@ -223,6 +223,7 @@
                   <th>状态</th>
                   <th class="num">今日请求</th>
                   <th class="num">今日 Tokens</th>
+                  <th class="num">今日消费</th>
                   <th>最近使用</th>
                   <th>操作</th>
                 </tr>
@@ -243,7 +244,7 @@
           <div class="grid-4" id="logs-stats">
             <div class="stat-box"><div class="stat-label">累计请求</div><div class="stat-value" id="logs-stat-requests">--</div></div>
             <div class="stat-box"><div class="stat-label">累计 Tokens</div><div class="stat-value" id="logs-stat-tokens">--</div></div>
-            <div class="stat-box"><div class="stat-label">平均每请求</div><div class="stat-value" id="logs-stat-quota">--</div></div>
+            <div class="stat-box"><div class="stat-label">累计消费</div><div class="stat-value" id="logs-stat-quota">--</div></div>
             <div class="stat-box"><div class="stat-label">调用最多模型</div><div class="stat-value" id="logs-stat-topmodel">--</div></div>
           </div>
         </div>
@@ -286,6 +287,7 @@
                   <th>渠道</th>
                   <th class="num">输入</th>
                   <th class="num">输出</th>
+                  <th class="num">消费</th>
                   <th class="num">耗时</th>
                   <th>流式</th>
                 </tr>

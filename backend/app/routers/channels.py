@@ -78,10 +78,17 @@ async def channel_models(type: int | None = None, _: dict = Depends(require_logi
 async def reorder_channels(payload: ReorderIn, _: dict = Depends(require_login)):
     """按「组内顺序」批量写回渠道优先级（契约 §4.7）。
 
-    - 组内**第 1 个 → 优先级最高**；第 n 个 → 优先级 1。
-    - 语义（New API 原生）：`priority` 越大越优先；**同一协议内，高优先级渠道
+    - 组内**第 1 个 → 优先级最高**。
+    - 语义（New API 原生）：`priority` 越大越优先；**同一模型内，高优先级渠道
       未失败/未被禁用前不会使用低优先级渠道**。渠道因额度耗尽被上游拒绝时，
       `auto_ban=1` 会让 New API 自动禁用该渠道（status=3），流量随即落到下一优先级。
+    - **协议分层**：OpenAI 组写正数 `n..1`，其它协议（Anthropic 等）写负数
+      `-1..-n` —— 保证任何 OpenAI 渠道都排在 Anthropic 渠道之前。
+      原因：New API 选渠道只按「组 + 模型」，不看入站协议，OpenAI 类型和
+      Anthropic 类型渠道若同优先级就会随机互抢（2026-10-18 实测：OpenAI 请求
+      被 Anthropic 渠道接走，日志里出现 `·Anthropic`）。Anthropic 渠道降为备用层。
+    - 写完后**必须重建 abilities 表**（`POST /api/channel/fix`）：`PUT /api/channel/`
+      只改 `channels.priority`，路由真正读的 `abilities` 不会跟着变，否则优先级失效。
     - 校验：id 必须存在、类型必须与所在组一致、不得重复出现 —— 防止误把
       OpenAI 渠道排进 Anthropic 组。
     """
@@ -106,13 +113,28 @@ async def reorder_channels(payload: ReorderIn, _: dict = Depends(require_login))
                     f"渠道 {cid} 的类型（{ch.get('type')}）与所在分组（{group.type}）不一致"
                 )
             seen.add(cid)
-            plan.append((cid, total - idx))
+            # OpenAI（type=1）用正数 n..1；其它协议用负数 -1..-n，永远排在后面
+            priority = (total - idx) if int(group.type) == 1 else -(idx + 1)
+            plan.append((cid, priority))
 
     updated = []
     for cid, priority in plan:
         await client.set_channel_priority(cid, priority)
         updated.append({"id": cid, "priority": priority})
-    return ok({"updated": updated})
+
+    # 关键：不同步 abilities 的话，上面写的优先级在路由层不生效
+    abilities = {"rebuilt": False}
+    try:
+        abilities = {"rebuilt": True, **(await client.fix_abilities())}
+    except BusinessError as exc:
+        return ok(
+            {
+                "updated": updated,
+                "abilities": abilities,
+                "warning": f"优先级已写入，但 abilities 重建失败（路由可能仍按旧值）：{exc}",
+            }
+        )
+    return ok({"updated": updated, "abilities": abilities})
 
 
 @router.get("")

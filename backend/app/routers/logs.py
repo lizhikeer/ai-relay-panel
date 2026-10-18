@@ -29,30 +29,35 @@ async def log_stats(days: int = Query(7, ge=1, le=90), _: dict = Depends(require
 
     def _bucket(store: dict, key_name: str, key: str) -> dict:
         if key not in store:
-            store[key] = {key_name: key, "requests": 0, "tokens": 0, "quota": 0.0}
+            store[key] = {key_name: key, "requests": 0, "tokens": 0, "cost_cny": 0.0}
         return store[key]
 
     for raw in items:
         log = map_log(raw)
         date = datetime.fromtimestamp(log["created_at"]).strftime("%Y-%m-%d") if log["created_at"] else ""
         tokens = (log["prompt_tokens"] or 0) + (log["completion_tokens"] or 0)
+        # 金额一律用 DeepSeek 均价现算（契约 §3.1），不用日志里的 quota ——
+        # 那是历史记账，旧倍率(37.5)下会虚高近三个数量级
+        cost = log["cost_cny"]
         d = _bucket(daily, "date", date)
         d["requests"] += 1
         d["tokens"] += tokens
-        d["quota"] = round(d["quota"] + (log["quota"] or 0), 6)
+        d["cost_cny"] = round(d["cost_cny"] + cost, 6)
         m = _bucket(by_model, "model_name", log["model_name"])
         m["requests"] += 1
         m["tokens"] += tokens
-        m["quota"] = round(m["quota"] + (log["quota"] or 0), 6)
+        m["cost_cny"] = round(m["cost_cny"] + cost, 6)
         c = _bucket(by_channel, "channel_name", log["channel_name"])
         c["requests"] += 1
-        c["quota"] = round(c["quota"] + (log["quota"] or 0), 6)
+        c["cost_cny"] = round(c["cost_cny"] + cost, 6)
 
     return ok(
         {
             "daily": sorted(daily.values(), key=lambda x: x["date"]),
             "by_model": sorted(by_model.values(), key=lambda x: x["requests"], reverse=True),
             "by_channel": sorted(by_channel.values(), key=lambda x: x["requests"], reverse=True),
+            "total_cost_cny": round(sum(x["cost_cny"] for x in daily.values()), 6),
+            "currency": "CNY",
         }
     )
 

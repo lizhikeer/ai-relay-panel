@@ -61,6 +61,13 @@
     if (!isFinite(n)) return '0';
     return n.toLocaleString('en-US');
   }
+  // 金额展示：按 DeepSeek 均价折算的人民币。小额（<¥1）给 4 位小数，否则 2 位。
+  function fmtCost(n) {
+    n = Number(n);
+    if (!isFinite(n)) n = 0;
+    if (n > 0 && n < 1) return '¥' + n.toFixed(4);
+    return '¥' + n.toFixed(2);
+  }
   function fmtTokens(n) {
     n = Number(n) || 0;
     if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -363,7 +370,12 @@
     else { upBox.textContent = '不可达'; upBox.style.color = 'var(--status-red)'; }
     $('#dash-upstream-sub').textContent = (up.name || '上游') + ' · ' + (up.latency_ms || 0) + 'ms';
 
-    $('#dash-tokens-today').textContent = fmtTokens(today.avg_tokens_per_request || 0);
+    // 金额由后端按 DeepSeek 均价从 token 现算（契约 §3.1）
+    $('#dash-cost-value').textContent = fmtCost(today.cost_cny || 0);
+    var pr = d.pricing || {};
+    $('#dash-cost-sub').textContent = pr.input
+      ? '输入 ¥' + pr.input + '/M · 输出 ¥' + pr.output + '/M · 缓存 ¥' + pr.cache_hit + '/M'
+      : '按 DeepSeek 均价折算';
 
     $('#dash-version').textContent = panel.version || '--';
     $('#dash-uptime').textContent = '运行时长：' + fmtUptime(panel.uptime_seconds);
@@ -879,12 +891,12 @@
 
   /* ---------------- 令牌管理 ---------------- */
   function loadTokens() {
-    $('#tokens-body').innerHTML = tableState(8, 'loading');
+    $('#tokens-body').innerHTML = tableState(9, 'loading');
     var t = state.tokens;
     return api('/tokens?page=' + t.page + '&size=' + t.size, { silent: true })
       .then(function (body) {
         if (!body.success) {
-          $('#tokens-body').innerHTML = tableState(8, 'error', body.message);
+          $('#tokens-body').innerHTML = tableState(9, 'error', body.message);
           return;
         }
         var data = body.data || {};
@@ -894,13 +906,13 @@
         renderTokens(items);
       })
       .catch(function (e) {
-        $('#tokens-body').innerHTML = tableState(8, 'error', e.message);
+        $('#tokens-body').innerHTML = tableState(9, 'error', e.message);
       });
   }
 
   function renderTokens(items) {
     if (!items.length) {
-      $('#tokens-body').innerHTML = tableState(8, 'empty');
+      $('#tokens-body').innerHTML = tableState(9, 'empty');
       return;
     }
     $('#tokens-body').innerHTML = items.map(function (tk) {
@@ -918,6 +930,7 @@
         '<td>' + statusBadge + '</td>' +
         '<td class="num">' + fmtInt(tk.today_requests || 0) + '</td>' +
         '<td class="num">' + fmtInt(tk.today_tokens || 0) + '</td>' +
+        '<td class="num">' + (tk.today_cost_cny ? fmtCost(tk.today_cost_cny) : '<span class="muted">—</span>') + '</td>' +
         '<td>' + (tk.accessed_at ? esc(fmtTime(tk.accessed_at)) : '<span class="muted">—</span>') + '</td>' +
         '<td><div class="cell-actions">' +
           '<button class="btn btn-primary btn-sm" data-act="quick">🚀 快速开始</button>' +
@@ -1243,7 +1256,7 @@
 
   /* ---------------- 调用日志 ---------------- */
   function loadLogs(silent) {
-    if (!silent) $('#logs-body').innerHTML = tableState(11, 'loading');
+    if (!silent) $('#logs-body').innerHTML = tableState(12, 'loading');
     var g = state.logs;
     var q = '/logs?page=' + g.page + '&size=' + g.size +
       '&type=' + encodeURIComponent(g.type) +
@@ -1252,7 +1265,7 @@
     return api(q, { silent: true })
       .then(function (body) {
         if (!body.success) {
-          $('#logs-body').innerHTML = tableState(11, 'error', body.message);
+          $('#logs-body').innerHTML = tableState(12, 'error', body.message);
           return;
         }
         var data = body.data || {};
@@ -1263,13 +1276,13 @@
         updateLogsPager();
       })
       .catch(function (e) {
-        $('#logs-body').innerHTML = tableState(11, 'error', e.message);
+        $('#logs-body').innerHTML = tableState(12, 'error', e.message);
       });
   }
 
   function renderLogs(items) {
     if (!items.length) {
-      $('#logs-body').innerHTML = tableState(11, 'empty');
+      $('#logs-body').innerHTML = tableState(12, 'empty');
       return;
     }
     $('#logs-body').innerHTML = items.map(function (lg) {
@@ -1287,6 +1300,7 @@
         '<td>' + esc(lg.channel_name) + '</td>' +
         '<td class="num">' + esc(lg.prompt_tokens != null ? lg.prompt_tokens : 0) + '</td>' +
         '<td class="num">' + esc(lg.completion_tokens != null ? lg.completion_tokens : 0) + '</td>' +
+        '<td class="num">' + (lg.cost_cny != null ? fmtCost(lg.cost_cny) : '—') + '</td>' +
         '<td class="num">' + esc(lg.latency_ms != null ? lg.latency_ms : '—') + '</td>' +
         '<td>' + (lg.is_stream ? '<span class="badge badge-purple">流式</span>' : '<span class="muted">—</span>') + '</td>' +
         '</tr>';
@@ -1309,17 +1323,18 @@
         var daily = Array.isArray(d.daily) ? d.daily : [];
         var byModel = Array.isArray(d.by_model) ? d.by_model : [];
 
-        var req = 0, tokens = 0;
+        var req = 0, tokens = 0, cost = 0;
         daily.forEach(function (x) {
           req += Number(x.requests || 0);
           tokens += Number(x.tokens || 0);
+          cost += Number(x.cost_cny || 0);
         });
         var top = byModel.slice().sort(function (a, b) { return (b.requests || 0) - (a.requests || 0); })[0];
 
         $('#logs-stat-requests').textContent = fmtInt(req);
         $('#logs-stat-tokens').textContent = fmtTokens(tokens);
-        // 面板只看 token，不做金额换算
-        $('#logs-stat-quota').textContent = req ? fmtTokens(Math.round(tokens / req)) : '—';
+        // 按 DeepSeek 均价折算（契约 §3.1）
+        $('#logs-stat-quota').textContent = fmtCost(cost);
         $('#logs-stat-topmodel').textContent = top ? top.model_name : '—';
         $('#logs-stats-updated').textContent = '更新：' + nowText();
       })

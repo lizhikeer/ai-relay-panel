@@ -59,6 +59,18 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 - 探测失败不得影响启动
         logger.warning("[渠道创建接口] 探测异常（不影响启动）：%s", exc)
 
+    # 定价同步：没配倍率的模型会被 New API 按硬编码 37.5 计费（≈$75/M，高出两个数量级）。
+    # 每次启动补一次，保证新增/改名模型也按 DeepSeek 均价记账（契约 §3.1）。
+    try:
+        synced = await client.sync_model_ratios()
+        logger.info(
+            "[定价] 按 DeepSeek 均价同步 %s 个模型的倍率，本次变更 %s",
+            synced.get("models"),
+            synced.get("changed"),
+        )
+    except Exception as exc:  # noqa: BLE001 - 定价同步失败不得影响启动
+        logger.warning("[定价] 同步失败（不影响启动）：%s", exc)
+
     yield
 
     await close_client()

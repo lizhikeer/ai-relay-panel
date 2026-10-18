@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
+from .. import pricing
 from ..auth import require_login
 from ..newapi import get_client, map_token
 from ..response import fail, ok, paged
@@ -35,18 +36,25 @@ async def list_tokens(
     data = body.get("data") or {}
     items = [map_token(t) for t in (data.get("items") or [])]
 
-    # 面板「不算账、只看 token」：用今日消费日志按令牌名聚合 token 用量。
-    # 取不到日志时不影响列表（降级为 None，前端显示 —）。
+    # 用今日消费日志按令牌名聚合 token 用量与**折算金额**（DeepSeek 均价）。
+    # 取不到日志时不影响列表（降级为 0，前端显示 —）。
     usage: dict[str, dict] = {}
     try:
         for log in await client.today_consumption_logs():
             name = log.get("token_name") or ""
             if not name:
                 continue
-            slot = usage.setdefault(name, {"requests": 0, "prompt": 0, "completion": 0})
+            slot = usage.setdefault(
+                name, {"requests": 0, "prompt": 0, "completion": 0, "cost": 0.0}
+            )
             slot["requests"] += 1
-            slot["prompt"] += int(log.get("prompt_tokens") or 0)
-            slot["completion"] += int(log.get("completion_tokens") or 0)
+            prompt = int(log.get("prompt_tokens") or 0)
+            completion = int(log.get("completion_tokens") or 0)
+            slot["prompt"] += prompt
+            slot["completion"] += completion
+            slot["cost"] += pricing.cost_cny(
+                prompt, completion, log.get("cache_tokens"), log.get("model_name")
+            )
     except Exception:  # noqa: BLE001 - 统计失败不影响令牌列表
         usage = {}
 
@@ -57,11 +65,13 @@ async def list_tokens(
             item["today_input_tokens"] = 0
             item["today_output_tokens"] = 0
             item["today_tokens"] = 0
+            item["today_cost_cny"] = 0.0
         else:
             item["today_requests"] = slot["requests"]
             item["today_input_tokens"] = slot["prompt"]
             item["today_output_tokens"] = slot["completion"]
             item["today_tokens"] = slot["prompt"] + slot["completion"]
+            item["today_cost_cny"] = round(slot["cost"], 6)
 
     total = data.get("total")
     if total is None:

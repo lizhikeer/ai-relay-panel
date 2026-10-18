@@ -154,6 +154,7 @@ def seed_tokens():
             "today_input_tokens": tid * 4200,
             "today_output_tokens": tid * 1100,
             "today_tokens": tid * 5300,
+            "today_cost_cny": round(tid * 0.0037, 6),
             "created_at": _ts(days=30),
             "accessed_at": _ts(minutes=7),
         })
@@ -183,7 +184,9 @@ def seed_logs(count=137):
             "channel_name": chan_pool[rnd.randrange(len(chan_pool))],
             "prompt_tokens": pt,
             "completion_tokens": ct,
+            "cache_tokens": int(pt * 0.9),
             "quota": round(rnd.uniform(0.001, 0.08), 4),
+            "cost_cny": round((pt * 0.1 * 2.0 + ct * 6.0) / 1_000_000, 6),
             "latency_ms": rnd.randrange(180, 2400),
             "is_stream": rnd.random() < 0.6,
             "content": "",
@@ -213,17 +216,17 @@ def log_stats_payload(days=7):
             "date": d.strftime("%Y-%m-%d"),
             "requests": rnd.randrange(400, 1600),
             "tokens": rnd.randrange(800000, 4200000),
-            "quota": round(rnd.uniform(3.0, 18.0), 2),
+            "cost_cny": round(rnd.uniform(3.0, 18.0), 2),
         })
     by_model = [
-        {"model_name": "deepseek-v4.1-flash", "requests": 800, "tokens": 2000000, "quota": 8.0},
-        {"model_name": "spark-x2.5-4b", "requests": 300, "tokens": 900000, "quota": 3.2},
-        {"model_name": "claude-3-5-sonnet", "requests": 120, "tokens": 400000, "quota": 2.1},
-        {"model_name": "gpt-4o-mini", "requests": 64, "tokens": 210000, "quota": 1.04},
+        {"model_name": "deepseek-v4.1-flash", "requests": 800, "tokens": 2000000, "cost_cny": 8.0},
+        {"model_name": "spark-x2.5-4b", "requests": 300, "tokens": 900000, "cost_cny": 3.2},
+        {"model_name": "claude-3-5-sonnet", "requests": 120, "tokens": 400000, "cost_cny": 2.1},
+        {"model_name": "gpt-4o-mini", "requests": 64, "tokens": 210000, "cost_cny": 1.04},
     ]
     by_channel = [
-        {"channel_name": "TK-LzK-openai", "requests": 640, "quota": 6.0},
-        {"channel_name": "TK-LzK-anthropic", "requests": 300, "quota": 3.4},
+        {"channel_name": "TK-LzK-openai", "requests": 640, "cost_cny": 6.0},
+        {"channel_name": "TK-LzK-anthropic", "requests": 300, "cost_cny": 3.4},
     ]
     return {"daily": daily, "by_model": by_model, "by_channel": by_channel}
 
@@ -251,6 +254,18 @@ def overview_payload():
             "input_tokens": 2100000,
             "output_tokens": 1410203,
             "avg_tokens_per_request": 2733,
+            "cost_cny": 4.2183,
+            "cost_currency": "CNY",
+        },
+        "pricing": {
+            "currency": "CNY",
+            "unit": "per_1m_tokens",
+            "input": 2.0,
+            "output": 6.0,
+            "cache_hit": 0.0667,
+            "pro_multiplier": 3.0,
+            "usd_cny": 7.3,
+            "note": "DeepSeek 官方峰谷价按时段加权后的均价，不区分峰谷",
         },
         "upstream": {"name": "tokendance.space", "reachable": True, "latency_ms": 95},
         "panel": {"version": "0.1.0", "uptime_seconds": int(time.time()) - START_TS},
