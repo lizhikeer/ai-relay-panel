@@ -118,8 +118,9 @@
     "today": {
       "requests": 1284,
       "tokens": 3510203,
-      "quota_spent": 12.34,
-      "quota_currency": "CNY"
+      "input_tokens": 2100000,
+      "output_tokens": 1410203,
+      "avg_tokens_per_request": 2733
     },
     "upstream": {
       "name": "tokendance.space",
@@ -291,14 +292,37 @@
   "key_masked": "sk-abcd****wxyz",
   "status": 1,
   "status_text": "启用",
-  "quota": 100,
-  "quota_used": 12.34,
-  "unlimited_quota": false,
+  "quota": 0,
+  "quota_used": 0,
+  "unlimited_quota": true,
   "expired_time": -1,
   "created_at": 1791900000,
-  "accessed_at": 1791900000
+  "accessed_at": 1791900000,
+  "today_requests": 42,
+  "today_input_tokens": 18000,
+  "today_output_tokens": 6200,
+  "today_tokens": 24200
 }
 ```
+
+> 🆕 **`today_*`（2026-10-18 新增）**：由 BFF 拉取**今日消费日志**按 `token_name` 聚合而来，
+> 用于面板「不看金额、只看 token」的口径。取不到日志时全部为 `0`（不影响列表）。
+> ⚠️ 上游单页上限 500 条，日志量大时该统计会**低估**（本项目规模足够）。
+
+### 5.2 面板不计量：新建令牌一律不限额度（2026-10-18）
+
+本面板定位是「自用中转站的用量看板」，**不做额度控制**：
+
+- `POST /panel-api/tokens` 会**忽略**请求体里的 `quota` / `unlimited_quota`，
+  强制以 `unlimited_quota=true, quota=0` 创建（前端新建表单也不再提供额度输入）
+- 前端不再展示金额：令牌列表改为「今日请求 / 今日 Tokens」，
+  看板「今日消费」改为「今日 Tokens（输入/输出拆分）」，日志去掉「消费」列
+- `quota` / `quota_used` 字段仍**保留返回**（兼容旧前端），但界面不展示
+
+> ⚠️ **重要**：令牌的 `unlimited_quota` 只解除**令牌这一层**的限制，
+> New API 仍会从**用户账户**的 `quota` 扣费；账户余额不足时任何令牌都会 403
+> 「余额不足」（`PreConsumedQuota=500`，余额低于 500 连小请求也过不去）。
+> 因此本面板把账户额度一次性设成天文数字（1e12），见 `HANDOVER.md` §3.1。
 
 创建请求：
 

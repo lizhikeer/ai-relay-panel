@@ -30,9 +30,39 @@ async def list_tokens(
     size: int = Query(50, ge=1, le=500),
     _: dict = Depends(require_login),
 ):
-    body = await get_client().list_tokens(page, size)
+    client = get_client()
+    body = await client.list_tokens(page, size)
     data = body.get("data") or {}
     items = [map_token(t) for t in (data.get("items") or [])]
+
+    # 面板「不算账、只看 token」：用今日消费日志按令牌名聚合 token 用量。
+    # 取不到日志时不影响列表（降级为 None，前端显示 —）。
+    usage: dict[str, dict] = {}
+    try:
+        for log in await client.today_consumption_logs():
+            name = log.get("token_name") or ""
+            if not name:
+                continue
+            slot = usage.setdefault(name, {"requests": 0, "prompt": 0, "completion": 0})
+            slot["requests"] += 1
+            slot["prompt"] += int(log.get("prompt_tokens") or 0)
+            slot["completion"] += int(log.get("completion_tokens") or 0)
+    except Exception:  # noqa: BLE001 - 统计失败不影响令牌列表
+        usage = {}
+
+    for item in items:
+        slot = usage.get(item["name"])
+        if slot is None:
+            item["today_requests"] = 0
+            item["today_input_tokens"] = 0
+            item["today_output_tokens"] = 0
+            item["today_tokens"] = 0
+        else:
+            item["today_requests"] = slot["requests"]
+            item["today_input_tokens"] = slot["prompt"]
+            item["today_output_tokens"] = slot["completion"]
+            item["today_tokens"] = slot["prompt"] + slot["completion"]
+
     total = data.get("total")
     if total is None:
         total = len(items)
@@ -43,9 +73,14 @@ async def list_tokens(
 async def create_token(payload: TokenIn, _: dict = Depends(require_login)):
     if not payload.name:
         return fail("令牌名不能为空")
-    result = await get_client().create_token(payload.model_dump(exclude_none=True))
+    data = payload.model_dump(exclude_none=True)
+    # 本面板不做额度控制（见契约 §5.2）：新建令牌**一律不限额度**，
+    # 忽略前端传来的 quota / unlimited_quota，避免被误设成有限额度后突然 403。
+    data["unlimited_quota"] = True
+    data["quota"] = 0
+    result = await get_client().create_token(data)
     # data = { "id": 12, "key": "sk-...." }
-    # key 为**一次性**明文回显（上游仅能在创建后取到明文），此后所有查询接口只回掩码。
+    # key 为明文回显（上游 POST /api/token/{id}/key 对任意令牌都返回明文）
     return ok(result)
 
 

@@ -61,12 +61,6 @@
     if (!isFinite(n)) return '0';
     return n.toLocaleString('en-US');
   }
-  function fmtMoney(n, currency) {
-    n = Number(n);
-    if (!isFinite(n)) n = 0;
-    var s = n.toFixed(2);
-    return currency ? (s + ' ' + currency) : s;
-  }
   function fmtTokens(n) {
     n = Number(n) || 0;
     if (n >= 1e9) return (n / 1e9).toFixed(2) + 'B';
@@ -359,15 +353,17 @@
     $('#dash-req-value').textContent = fmtInt(today.requests || 0);
     $('#dash-req-sub').textContent = '今日累计调用次数';
 
-    $('#dash-quota-value').textContent = fmtMoney(today.quota_spent || 0, today.quota_currency || '');
-    $('#dash-quota-sub').textContent = '按上游计费口径统计';
+    // 面板口径：只统计 token，不做金额换算
+    $('#dash-quota-value').textContent = fmtTokens(today.tokens || 0);
+    $('#dash-quota-sub').textContent = '输入 ' + fmtTokens(today.input_tokens || 0) +
+      ' · 输出 ' + fmtTokens(today.output_tokens || 0);
 
     var upBox = $('#dash-upstream-value');
     if (up.reachable) { upBox.textContent = '可达'; upBox.style.color = 'var(--status-green)'; }
     else { upBox.textContent = '不可达'; upBox.style.color = 'var(--status-red)'; }
     $('#dash-upstream-sub').textContent = (up.name || '上游') + ' · ' + (up.latency_ms || 0) + 'ms';
 
-    $('#dash-tokens-today').textContent = fmtTokens(today.tokens || 0);
+    $('#dash-tokens-today').textContent = fmtTokens(today.avg_tokens_per_request || 0);
 
     $('#dash-version').textContent = panel.version || '--';
     $('#dash-uptime').textContent = '运行时长：' + fmtUptime(panel.uptime_seconds);
@@ -911,14 +907,8 @@
       var enabled = tk.status === 1;
       var statusBadge = '<span class="badge ' + (enabled ? 'badge-green' : 'badge-red') + '">' +
         esc(tk.status_text || (enabled ? '启用' : '禁用')) + '</span>';
-
-      var used = fmtMoney(tk.quota_used || 0);
-      var rest;
       if (tk.unlimited_quota) {
-        rest = '<span class="badge badge-purple">不限额度</span>';
-      } else {
-        var left = Number(tk.quota || 0) - Number(tk.quota_used || 0);
-        rest = '<span class="' + (left <= 0 ? 'error-text' : '') + '">' + fmtMoney(left) + '</span>';
+        statusBadge += ' <span class="badge badge-purple">不限额度</span>';
       }
 
       return '<tr data-id="' + esc(tk.id) + '">' +
@@ -926,8 +916,8 @@
         '<td>' + esc(tk.name) + '</td>' +
         '<td class="mono">' + esc(tk.key_masked || '—') + '</td>' +
         '<td>' + statusBadge + '</td>' +
-        '<td class="num">' + esc(used) + '</td>' +
-        '<td class="num">' + rest + '</td>' +
+        '<td class="num">' + fmtInt(tk.today_requests || 0) + '</td>' +
+        '<td class="num">' + fmtInt(tk.today_tokens || 0) + '</td>' +
         '<td>' + (tk.accessed_at ? esc(fmtTime(tk.accessed_at)) : '<span class="muted">—</span>') + '</td>' +
         '<td><div class="cell-actions">' +
           '<button class="btn btn-primary btn-sm" data-act="quick">🚀 快速开始</button>' +
@@ -995,20 +985,31 @@
       '<div id="tk-form-error" class="field-error" hidden></div>' +
       '<div class="form-group"><label class="form-label">名称 *</label>' +
         '<input class="form-control" id="tk-name" value="' + esc(tk ? tk.name : '') + '" placeholder="如 张老师"></div>' +
-      '<div class="form-row">' +
-        '<div class="form-group"><label class="form-label">额度（消费上限）</label>' +
-          '<input type="number" class="form-control" id="tk-quota" value="' + esc(tk && tk.quota != null ? tk.quota : 100) + '"></div>' +
-        '<div class="form-group"><label class="form-label">有效期（天）</label>' +
-          '<input type="number" class="form-control" id="tk-expired" value="-1">' +
-          '<div class="form-help">-1 = 永久有效</div></div>' +
-      '</div>' +
+      (isEdit
+        ? '<div class="form-row">' +
+            '<div class="form-group"><label class="form-label">额度（消费上限）</label>' +
+              '<input type="number" class="form-control" id="tk-quota" value="' + esc(tk.quota != null ? tk.quota : 100) + '"></div>' +
+            '<div class="form-group"><label class="form-label">有效期（天）</label>' +
+              '<input type="number" class="form-control" id="tk-expired" value="-1">' +
+              '<div class="form-help">-1 = 永久有效</div></div>' +
+          '</div>'
+        : '<div class="form-row">' +
+            '<div class="form-group"><label class="form-label">额度</label>' +
+              '<input class="form-control" value="不限额度" disabled>' +
+              '<div class="form-help">本面板不计量，新建令牌一律不限额度</div></div>' +
+            '<div class="form-group"><label class="form-label">有效期（天）</label>' +
+              '<input type="number" class="form-control" id="tk-expired" value="-1">' +
+              '<div class="form-help">-1 = 永久有效</div></div>' +
+          '</div>') +
       '<div class="form-group"><label class="form-label">分组</label>' +
         '<input class="form-control" id="tk-group" value="' + esc(tk ? (tk.group || 'default') : 'default') + '"></div>' +
       '<div class="form-group"><label class="form-label">可用模型（逗号分隔，留空 = 全部）</label>' +
         '<input class="form-control" id="tk-models" placeholder="留空表示不限制"></div>' +
-      '<div class="form-group checkbox-line">' +
-        '<input type="checkbox" id="tk-unlimited"' + (tk && tk.unlimited_quota ? ' checked' : '') + '>' +
-        '<label for="tk-unlimited">不限额度</label></div>';
+      (isEdit
+        ? '<div class="form-group checkbox-line">' +
+            '<input type="checkbox" id="tk-unlimited"' + (tk.unlimited_quota ? ' checked' : '') + '>' +
+            '<label for="tk-unlimited">不限额度</label></div>'
+        : '');
 
     var footer = '<button class="btn btn-outline" data-act="cancel">取消</button>' +
       '<button class="btn btn-primary" data-act="save">' + (isEdit ? '保存修改' : '创建') + '</button>';
@@ -1019,10 +1020,11 @@
       var name = $('#tk-name').value.trim();
       if (!name) { showFieldError('tk-name', '请填写令牌名称'); return; }
 
-      var unlimited = $('#tk-unlimited').checked;
+      // 新建：一律不限额度（后端也会强制覆盖，见契约 §5.2）
+      var unlimited = isEdit ? $('#tk-unlimited').checked : true;
       var payload = {
         name: name,
-        quota: unlimited ? 0 : (Number($('#tk-quota').value) || 0),
+        quota: (isEdit && !unlimited) ? (Number($('#tk-quota').value) || 0) : 0,
         unlimited_quota: unlimited,
         expired_days: Number($('#tk-expired').value),
         models: splitModels($('#tk-models').value),
@@ -1241,7 +1243,7 @@
 
   /* ---------------- 调用日志 ---------------- */
   function loadLogs(silent) {
-    if (!silent) $('#logs-body').innerHTML = tableState(12, 'loading');
+    if (!silent) $('#logs-body').innerHTML = tableState(11, 'loading');
     var g = state.logs;
     var q = '/logs?page=' + g.page + '&size=' + g.size +
       '&type=' + encodeURIComponent(g.type) +
@@ -1250,7 +1252,7 @@
     return api(q, { silent: true })
       .then(function (body) {
         if (!body.success) {
-          $('#logs-body').innerHTML = tableState(12, 'error', body.message);
+          $('#logs-body').innerHTML = tableState(11, 'error', body.message);
           return;
         }
         var data = body.data || {};
@@ -1261,13 +1263,13 @@
         updateLogsPager();
       })
       .catch(function (e) {
-        $('#logs-body').innerHTML = tableState(12, 'error', e.message);
+        $('#logs-body').innerHTML = tableState(11, 'error', e.message);
       });
   }
 
   function renderLogs(items) {
     if (!items.length) {
-      $('#logs-body').innerHTML = tableState(12, 'empty');
+      $('#logs-body').innerHTML = tableState(11, 'empty');
       return;
     }
     $('#logs-body').innerHTML = items.map(function (lg) {
@@ -1285,7 +1287,6 @@
         '<td>' + esc(lg.channel_name) + '</td>' +
         '<td class="num">' + esc(lg.prompt_tokens != null ? lg.prompt_tokens : 0) + '</td>' +
         '<td class="num">' + esc(lg.completion_tokens != null ? lg.completion_tokens : 0) + '</td>' +
-        '<td class="num">' + esc(lg.quota != null ? lg.quota : 0) + '</td>' +
         '<td class="num">' + esc(lg.latency_ms != null ? lg.latency_ms : '—') + '</td>' +
         '<td>' + (lg.is_stream ? '<span class="badge badge-purple">流式</span>' : '<span class="muted">—</span>') + '</td>' +
         '</tr>';
@@ -1308,17 +1309,17 @@
         var daily = Array.isArray(d.daily) ? d.daily : [];
         var byModel = Array.isArray(d.by_model) ? d.by_model : [];
 
-        var req = 0, tokens = 0, quota = 0;
+        var req = 0, tokens = 0;
         daily.forEach(function (x) {
           req += Number(x.requests || 0);
           tokens += Number(x.tokens || 0);
-          quota += Number(x.quota || 0);
         });
         var top = byModel.slice().sort(function (a, b) { return (b.requests || 0) - (a.requests || 0); })[0];
 
         $('#logs-stat-requests').textContent = fmtInt(req);
         $('#logs-stat-tokens').textContent = fmtTokens(tokens);
-        $('#logs-stat-quota').textContent = fmtMoney(quota);
+        // 面板只看 token，不做金额换算
+        $('#logs-stat-quota').textContent = req ? fmtTokens(Math.round(tokens / req)) : '—';
         $('#logs-stat-topmodel').textContent = top ? top.model_name : '—';
         $('#logs-stats-updated').textContent = '更新：' + nowText();
       })

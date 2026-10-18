@@ -37,6 +37,7 @@ async def overview(_: dict = Depends(require_login)):
     tk_enabled = sum(1 for t in tokens if t.get("status") == 1)
 
     # --- 今日用量（从消费日志聚合）---
+    # 面板口径：只统计 token，不做金额换算（见契约 §3）
     midnight = int(datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp())
     now = int(time.time())
     log_data = (
@@ -46,12 +47,14 @@ async def overview(_: dict = Depends(require_login)):
     ).get("data") or {}
     today_logs = log_data.get("items") or []
     today_requests = 0
-    today_tokens = 0
-    today_quota = 0.0
+    today_input = 0
+    today_output = 0
     for log in today_logs:
         today_requests += 1
-        today_tokens += int(log.get("prompt_tokens") or 0) + int(log.get("completion_tokens") or 0)
-        today_quota += float(log.get("quota") or 0)
+        today_input += int(log.get("prompt_tokens") or 0)
+        today_output += int(log.get("completion_tokens") or 0)
+    today_tokens = today_input + today_output
+    today_avg = int(round(today_tokens / today_requests)) if today_requests else 0
 
     # --- 上游连通性 ---
     upstream_name = urlparse(settings.newapi_base_url).hostname or settings.newapi_base_url
@@ -87,8 +90,9 @@ async def overview(_: dict = Depends(require_login)):
             "today": {
                 "requests": today_requests,
                 "tokens": today_tokens,
-                "quota_spent": round(today_quota, 6),
-                "quota_currency": currency,
+                "input_tokens": today_input,
+                "output_tokens": today_output,
+                "avg_tokens_per_request": today_avg,
             },
             "upstream": {
                 "name": upstream_name,

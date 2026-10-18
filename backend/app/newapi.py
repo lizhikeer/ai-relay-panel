@@ -15,6 +15,7 @@ import asyncio
 import logging
 import re
 import time
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -671,6 +672,27 @@ class NewAPIClient:
     # --- 日志 ------------------------------------------------------------- #
     async def list_logs(self, params: dict) -> dict:
         return await self._json_request("GET", "/api/log/", params=params)
+
+    async def today_consumption_logs(self) -> list[dict]:
+        """今日（本地时间 00:00 起）的消费日志，按令牌/模型聚合 token 用量用。
+
+        ⚠️ 上游单页上限 500 条；日志量更大时结果会低估（本项目规模足够）。
+        """
+        midnight = int(
+            datetime.now().replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+        )
+        data = (
+            await self.list_logs(
+                {
+                    "p": 1,
+                    "page_size": 500,
+                    "type": 2,
+                    "start_timestamp": midnight,
+                    "end_timestamp": int(time.time()),
+                }
+            )
+        ).get("data") or {}
+        return data.get("items") or []
 
     async def log_stat(self, log_type: int = 0) -> dict:
         body = await self._json_request("GET", "/api/log/stat", params={"type": log_type})
