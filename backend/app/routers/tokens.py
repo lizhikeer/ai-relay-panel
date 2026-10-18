@@ -4,9 +4,8 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
 
-from .. import pricing
 from ..auth import require_login
-from ..newapi import get_client, map_token
+from ..newapi import get_client, map_log, map_token
 from ..response import fail, ok, paged
 
 router = APIRouter(prefix="/panel-api/tokens", tags=["tokens"])
@@ -40,21 +39,19 @@ async def list_tokens(
     # 取不到日志时不影响列表（降级为 0，前端显示 —）。
     usage: dict[str, dict] = {}
     try:
-        for log in await client.today_consumption_logs():
-            name = log.get("token_name") or ""
+        for raw in await client.today_consumption_logs():
+            # 走 map_log 统一口径（cache_tokens 在原始日志的 `other` 里）
+            log = map_log(raw)
+            name = log["token_name"]
             if not name:
                 continue
             slot = usage.setdefault(
                 name, {"requests": 0, "prompt": 0, "completion": 0, "cost": 0.0}
             )
             slot["requests"] += 1
-            prompt = int(log.get("prompt_tokens") or 0)
-            completion = int(log.get("completion_tokens") or 0)
-            slot["prompt"] += prompt
-            slot["completion"] += completion
-            slot["cost"] += pricing.cost_cny(
-                prompt, completion, log.get("cache_tokens"), log.get("model_name")
-            )
+            slot["prompt"] += log["prompt_tokens"]
+            slot["completion"] += log["completion_tokens"]
+            slot["cost"] += log["cost_cny"]
     except Exception:  # noqa: BLE001 - 统计失败不影响令牌列表
         usage = {}
 

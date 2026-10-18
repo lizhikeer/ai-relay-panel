@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from .. import pricing
 from ..auth import require_login
 from ..config import settings
-from ..newapi import get_client, map_channel_abnormal
+from ..newapi import get_client, map_channel_abnormal, map_log
 from ..response import ok
 
 router = APIRouter(prefix="/panel-api", tags=["overview"])
@@ -52,16 +52,14 @@ async def overview(_: dict = Depends(require_login)):
     today_input = 0
     today_output = 0
     today_cost = 0.0
-    for log in today_logs:
+    for raw in today_logs:
+        # 走 map_log 统一口径：cache_tokens 藏在原始日志的 `other` JSON 里，
+        # 直接读 raw 会拿不到，缓存命中会被当成未命中按 30 倍价计（2026-10-18 踩坑）
+        log = map_log(raw)
         today_requests += 1
-        today_input += int(log.get("prompt_tokens") or 0)
-        today_output += int(log.get("completion_tokens") or 0)
-        today_cost += pricing.cost_cny(
-            log.get("prompt_tokens"),
-            log.get("completion_tokens"),
-            log.get("cache_tokens"),
-            log.get("model_name"),
-        )
+        today_input += log["prompt_tokens"]
+        today_output += log["completion_tokens"]
+        today_cost += log["cost_cny"]
     today_tokens = today_input + today_output
     today_avg = int(round(today_tokens / today_requests)) if today_requests else 0
 
