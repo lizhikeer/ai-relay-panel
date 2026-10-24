@@ -13,6 +13,10 @@ COPY app ./app
 
 # 非 root 运行
 RUN useradd -m -u 10001 panel && chown -R panel:panel /app
+# /data 是 token 持久化目录（state_store.py）。compose 里用**命名卷**挂载：
+# Docker 首次初始化命名卷时会继承这里建好的属主（panel），无需宿主机 root
+# chown（bind mount 做不到这点，实测 ./data 挂载会因属主不对而写不进去）。
+RUN mkdir -p /data && chown panel:panel /data
 USER panel
 
 EXPOSE 18080

@@ -137,11 +137,6 @@ verify_public() {
 cmd_deploy() {
   require_env
 
-  # token 持久化目录：容器内 panel 用户(uid 10001)可写（docker-compose.yml 挂载 ./data:/data）
-  step "准备 token 持久化目录（./data → 容器 /data，chown 10001）"
-  mkdir -p "$PROJECT_DIR/data"
-  chown 10001:10001 "$PROJECT_DIR/data" 2>/dev/null || c_red "⚠ chown 失败（需 root？）；若容器内写不了，token 持久化会自动降级"
-
   step "构建镜像（docker compose build）"
   compose build
 

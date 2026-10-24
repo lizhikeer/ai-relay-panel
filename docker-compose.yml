@@ -29,8 +29,11 @@ services:
       # token 持久化（backend/app/state_store.py 写 /data/panel-state.json）。
       # 重启/重建容器后复用未过期的 access_token，免登录 → 少积累一条
       # 30 天寿命的 user_sessions 记录（P0-1 会话上限治理的一环）。
-      # 目录属主须为容器内用户 panel(uid 10001)，deploy.sh 会自动 mkdir+chown。
-      - ./data:/data
+      # 用**命名卷**而非 bind mount：命名卷首次初始化会继承镜像内 /data 的
+      # 属主（panel, uid 10001），宿主机无需 root chown（bind mount 实测写不进）。
+      - panel-data:/data
+volumes:
+  panel-data:
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:18080/panel-api/system/health',timeout=3).status==200 else 1)"]
       interval: 30s
