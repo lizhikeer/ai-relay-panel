@@ -17,3 +17,7 @@ env/
 
 # 本地调试
 frontend/.mock-cache
+
+# BFF 运行时状态（token 持久化，绝不入库）
+data/
+.panel-state.json

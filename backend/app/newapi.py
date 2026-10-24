@@ -24,8 +24,24 @@ import httpx
 from . import pricing
 from .config import settings
 from .response import BusinessError, UpstreamError
+from .state_store import StateStore
 
 logger = logging.getLogger("bff.newapi")
+
+# --------------------------------------------------------------------------- #
+# 会话治理（P0-1：user_sessions 上限 50 → 409 自锁死局的根治）
+# --------------------------------------------------------------------------- #
+# BFF / 调试脚本登录留下的 UA。**只回收能精确匹配这些前缀的会话**，
+# 浏览器会话（Mozilla/Chrome/...）一律不碰 —— 2026-10-24 实测 50 条堆满的
+# 会话全是 python-httpx / Python-urllib / curl，没有一条浏览器。
+_SCRIPT_UA_PREFIXES = ("python-httpx", "python-requests", "python-urllib", "curl/", "go-http-client", "wget/")
+# 两次登录之间至少间隔这么久才做一次例行回收（409 自救不受此限制）。
+_REAP_MIN_INTERVAL = 600.0
+
+
+def _is_script_ua(user_agent: str | None) -> bool:
+    ua = (user_agent or "").strip().lower()
+    return bool(ua) and ua.startswith(_SCRIPT_UA_PREFIXES)
 
 # rc.41 渠道创建接口的请求体是包装结构 {mode, channel}；扁平体会被判为 "channel cannot be empty"。
 # 契约 §4.3 给出的降级文案（接口确实不可用时使用）。
@@ -333,6 +349,21 @@ class NewAPIClient:
         self.channel_create_note: str = ""
         # 进程内缓存我们创建/更新过的渠道明文 key，仅用于生成脱敏展示，绝不下发
         self._channel_key_cache: dict[int, str] = {}
+        # token 持久化：重启复用，减少登录次数（登录 = 新会话，是 409 的直接推手）
+        self._state = StateStore()
+        self._last_reap: float = 0.0
+        saved = self._state.load()
+        saved_token = str(saved.get("access_token") or "")
+        saved_uid = saved.get("uid")
+        saved_exp = int(saved.get("expires_at") or 0)
+        if saved_token and saved_uid is not None and time.time() < saved_exp - 60:
+            self._token = saved_token
+            self._uid = int(saved_uid)
+            self._expires_at = saved_exp
+            logger.info(
+                "已从 %s 恢复 New API token（剩余 %d 分钟），启动无需登录",
+                self._state.path, int((saved_exp - time.time()) / 60),
+            )
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -343,22 +374,41 @@ class NewAPIClient:
         return self._channel_key_cache
 
     # --- 鉴权 ------------------------------------------------------------- #
-    async def login(self) -> None:
+    async def startup(self) -> None:
+        """启动时尽量就绪 token：优先复用持久化的有效 token，否则登录一次。
+
+        **绝不抛异常** —— 上游暂时不可达不能挡住 BFF 启动（首次真实请求时
+        `_ensure_token` 会再试）。
+        """
+        if self._token and time.time() < self._expires_at - 60:
+            return
         try:
-            resp = await self._client.post(
-                "/api/user/login",
-                json={
-                    "username": settings.newapi_admin_user,
-                    "password": settings.newapi_admin_password,
-                },
-            )
-        except httpx.HTTPError as exc:
-            raise UpstreamError(f"无法连接 New API 登录接口：{exc}") from exc
+            await self.login()
+        except Exception as exc:  # noqa: BLE001 - 启动失败不影响进程
+            logger.warning("启动时 New API 登录未成功（推迟到首个请求时再试）：%s", exc)
+
+    async def login(self) -> None:
+        resp = await self._post_login()
         # New API 对 /api/user/login 施加 CriticalRateLimit（默认 20 次/20 分钟/IP）。
         # 被拒请求不计入窗口（见 common/rate-limit.go），因此这里快速失败、不做重试，
         # 避免无谓的等待；生产环境靠 token 缓存几乎不会触发。
         if resp.status_code == 429:
             raise UpstreamError("New API 登录被限流（HTTP 429，20 次/20 分钟/IP），请稍后重试")
+        # 409 = 每用户会话数达上限（AUTH_SESSION_LIMIT，实测上限 50，会话 30 天才过期
+        # 且无自动清理）。死局在于：登录失败拿不到 token，没 token 就调不了清理接口。
+        # 破局点：**旧的 access_token 通常仍然有效**（上限只挡「新建」不废「已有」），
+        # 直接用它回收自己的脚本会话腾出名额，再重登一次。
+        if resp.status_code == 409:
+            logger.warning("New API 登录返回 409（会话数达上限），尝试用现有凭证自救清理…")
+            reaped = await self._reap_own_sessions_quietly(force=True)
+            if reaped > 0:
+                resp = await self._post_login()
+            if resp.status_code == 409:
+                raise UpstreamError(
+                    "New API 会话数已达上限（HTTP 409 AUTH_SESSION_LIMIT，每用户 50 个），"
+                    "自动清理未腾出名额。请在 New API 原生面板（:18083）登录后手动清理会话，"
+                    "或参考交接文档执行数据库级应急清理"
+                )
         if resp.status_code != 200:
             raise UpstreamError(f"New API 登录返回 HTTP {resp.status_code}")
         body = _safe_json(resp)
@@ -375,6 +425,130 @@ class NewAPIClient:
         expires = data.get("access_expires_at")
         self._expires_at = int(expires) if expires else int(time.time()) + 3600
         logger.info("New API 登录成功：user=%s uid=%s", user.get("username"), uid)
+        # 立刻落盘：重启/重建容器后可复用，少一次登录就少一条 30 天寿命的会话
+        self._state.save(
+            {
+                "access_token": token,
+                "uid": self._uid,
+                "expires_at": self._expires_at,
+                "saved_at": int(time.time()),
+                "base_url": self.base_url,
+            }
+        )
+        # 登录成功就回收「自己」的旧脚本会话，把 user_sessions 摁在个位数（根治 409）
+        await self._reap_own_sessions_quietly()
+
+    async def _post_login(self) -> httpx.Response:
+        try:
+            return await self._client.post(
+                "/api/user/login",
+                json={
+                    "username": settings.newapi_admin_user,
+                    "password": settings.newapi_admin_password,
+                },
+            )
+        except httpx.HTTPError as exc:
+            raise UpstreamError(f"无法连接 New API 登录接口：{exc}") from exc
+
+    async def _authed_raw(
+        self,
+        method: str,
+        path: str,
+        *,
+        token: str | None = None,
+        uid: int | None = None,
+        timeout: float | None = None,
+    ) -> httpx.Response:
+        """带当前（或指定）凭证的裸请求。
+
+        与 `_request` 的区别：**不做** `_ensure_token`、**不做** 401 自动重登 ——
+        供「会话回收」「健康探测」使用，绝不能反过来再触发登录（登录 = 新会话，
+        会话回收过程中再登录只会火上浇油；健康检查每 30s 一次更不能打登录接口）。
+        """
+        use_token = token if token is not None else self._token
+        use_uid = uid if uid is not None else self._uid
+        headers = {}
+        if use_token:
+            headers = {"Authorization": f"Bearer {use_token}", "New-Api-User": str(use_uid or "")}
+        try:
+            return await self._client.request(method, path, headers=headers, timeout=timeout)
+        except httpx.HTTPError as exc:
+            raise UpstreamError(f"New API 不可达：{exc}") from exc
+
+    async def _list_sessions(self) -> list[dict]:
+        """GET /api/user/sessions（2026-10-24 实测）→ data[]：
+        {sid, current, login_method, ip, user_agent, created_at, last_active_at, expires_at}"""
+        resp = await self._authed_raw("GET", "/api/user/sessions")
+        if resp.status_code != 200:
+            raise UpstreamError(f"获取会话列表返回 HTTP {resp.status_code}")
+        body = _safe_json(resp)
+        data = body.get("data")
+        return [s for s in data if isinstance(s, dict)] if isinstance(data, list) else []
+
+    async def _reap_own_sessions(self) -> int:
+        """回收「自己」的历史脚本会话，返回成功回收的条数。
+
+        规则（保守优先）：`current=true` 跳过；user_agent 不是已知脚本前缀的跳过
+        （浏览器会话绝不能误杀）。逐条 `DELETE /api/user/sessions/{sid}`。
+        """
+        sessions = await self._list_sessions()
+        reaped = 0
+        for s in sessions:
+            if s.get("current"):
+                continue
+            if not _is_script_ua(s.get("user_agent")):
+                continue
+            sid = s.get("sid")
+            if not sid:
+                continue
+            resp = await self._authed_raw("DELETE", f"/api/user/sessions/{sid}")
+            if resp.status_code == 200:
+                reaped += 1
+            else:
+                logger.warning("回收会话 %s 返回 HTTP %s", sid[:8], resp.status_code)
+        return reaped
+
+    async def _reap_own_sessions_quietly(self, *, force: bool = False) -> int:
+        """回收失败只记日志、绝不抛 —— 会话治理是保险，不能反过来弄挂登录。"""
+        if not self._token:
+            return 0
+        if not force and (time.time() - self._last_reap) < _REAP_MIN_INTERVAL:
+            return 0
+        self._last_reap = time.time()
+        try:
+            reaped = await self._reap_own_sessions()
+            if reaped:
+                logger.info("已回收 %d 条历史脚本会话（user_sessions 限额保险）", reaped)
+            return reaped
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("历史脚本会话回收失败（不影响主流程）：%s", exc)
+            return 0
+
+    def auth_snapshot(self) -> tuple[str, int]:
+        """本地视角的 token 状态（无网络请求）：("ok"|"expired"|"none", 剩余秒数)。"""
+        if not self._token:
+            return "none", 0
+        remaining = self._expires_at - int(time.time())
+        return ("ok" if remaining > 60 else "expired"), max(remaining, 0)
+
+    async def probe_auth(self) -> str:
+        """探测当前 token 在服务端是否仍有效（一次真实鉴权请求）。
+
+        返回 "ok"（200）/"invalid"（401/403）/"none"（无 token）/"unreachable"。
+        **绝不触发登录** —— 供健康检查高频调用；3 秒短超时（容器健康检查整体
+        只给 5 秒，探测不能占满）。
+        """
+        if not self._token:
+            return "none"
+        try:
+            resp = await self._authed_raw("GET", "/api/user/sessions", timeout=3.0)
+        except UpstreamError:
+            return "unreachable"
+        if resp.status_code == 200:
+            return "ok"
+        if resp.status_code in (401, 403):
+            return "invalid"
+        return "unreachable"
 
     async def _ensure_token(self) -> None:
         async with self._lock:

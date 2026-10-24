@@ -1,7 +1,7 @@
 """FastAPI 应用入口。
 
 - 统一异常处理：业务失败→200+success:false；未登录→401；上游故障→502
-- 启动时探测 New API 渠道创建接口可用性，并打印一次性告警
+- 启动时恢复/登录 New API token（持久化复用），并同步模型倍率
 - 托管 ../frontend 静态文件（若存在）
 """
 from __future__ import annotations
@@ -37,27 +37,11 @@ async def lifespan(app: FastAPI):
         logger.warning("未找到 .env，使用进程环境变量 / 默认值")
     logger.info("面板 BFF 启动中，New API = %s", config.settings.newapi_base_url)
 
-    # 一次性探测：New API rc.41 渠道创建接口可用性（非破坏性，不会创建渠道）
+    # 就绪 token：优先复用持久化的 access_token（重启免登录 = 少一条 30 天寿命的
+    # 会话，这是 409 会话上限死局治理的一部分）；没有/过期则登录一次。
+    # startup() 内部吞掉一切异常 —— 上游暂时不可达不能挡住 BFF 起进程。
     client = get_client()
-    try:
-        supported, note = await client.probe_channel_create()
-        client.channel_create_supported = supported
-        client.channel_create_note = note
-        if supported is True:
-            logger.warning(
-                "[渠道创建接口] %s。重要提醒：New API rc.41 的 POST /api/channel/ 请求体必须是 "
-                "{\"mode\":\"single\",\"channel\":{...}} 包装体；直接发送扁平渠道对象会返回 "
-                "\"channel cannot be empty\"（即契约 §4 所述『缺陷』的真正根因）。BFF 已按包装体调用，创建可用。",
-                note,
-            )
-        elif supported is False:
-            logger.warning(
-                "[渠道创建接口] %s。后续创建请求将返回 200+success:false 并给出降级引导。", note
-            )
-        else:
-            logger.warning("[渠道创建接口] %s。", note)
-    except Exception as exc:  # noqa: BLE001 - 探测失败不得影响启动
-        logger.warning("[渠道创建接口] 探测异常（不影响启动）：%s", exc)
+    await client.startup()
 
     # 定价同步：没配倍率的模型会被 New API 按硬编码 37.5 计费（≈$75/M，高出两个数量级）。
     # 每次启动补一次，保证新增/改名模型也按 DeepSeek 均价记账（契约 §3.1）。

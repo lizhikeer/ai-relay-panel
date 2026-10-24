@@ -488,8 +488,18 @@
 
 `GET /panel-api/system/health` 响应（**无需登录**）：
 ```json
-{ "success": true, "data": { "bff": "ok", "upstream": "ok", "upstream_latency_ms": 12 } }
+{ "success": true, "data": { "bff": "ok", "upstream": "ok", "upstream_latency_ms": 12, "auth": "ok", "token_expires_in": 640 } }
 ```
+
+`auth` 字段（2026-10-24 新增）：
+- `ok` —— 本地 token 未过期，且上游对它做了一次真实鉴权请求予以认可
+- `invalid` —— 本地未过期但服务端拒绝（401/403，如会话被手动清理）；下一笔业务请求会自动重登
+- `expired` —— 本地 token 已过 900 秒有效期（尚未触发重登；健康检查绝不代登录）
+- `none` —— 进程内没有 token（启动后尚未登录成功）
+- `unknown` —— 探测请求网络失败，无法判定
+- 该字段**只用于监控观察**，健康检查本身恒返回 200（绝不因 auth 异常让容器被
+  docker 反复重启 —— 重启=重新登录=加重会话问题）。
+- `token_expires_in`：本地 token 剩余秒数（无 token 时为 0）。
 
 ---
 
@@ -507,13 +517,30 @@
 > 以下均为 2026-10-10 在 `new-api v1.0.0-rc.41` 上**实测**得出的结论，
 > BFF 实现必须据此处理。写在这里避免后来者重复踩坑。
 
-### 10.1 鉴权
+### 10.1 鉴权与会话治理
 
 - 登录：`POST /api/user/login`，响应取 `data.access_token` 与 `data.user.id`
 - 后续管理请求需**同时**带：`Authorization: Bearer <token>` 与 `New-Api-User: <user_id>`
-- token 有过期时间（`access_expires_at`），BFF 需缓存 + 过期自动重登
+- token 有过期时间（`access_expires_at`，**实测硬编码 900 秒，无配置项**），BFF 需缓存 + 过期自动重登
 - ⚠️ **登录接口有 IP 级强限流**：每 IP 每 20 分钟仅 20 次，超出返回 `429`（空 body）。
   BFF 靠 token 缓存基本不会触发；但**联调/压测时极易被限流**，遇到 429 应快速失败并给出明确提示，不要无效重试。
+
+**会话治理（2026-10-24 实测，P0 级教训）**：
+
+- 每次登录都会在 `user_sessions` 表新建一条记录，**30 天才过期、无自动清理**；
+  每用户上限 **50 条**，打满后登录返回 `409 AUTH_SESSION_LIMIT` —— 而登录失败
+  就拿不到 token，没 token 也调不了清理接口，形成自锁死局（面板全站 502）。
+- BFF 的对策（`backend/app/newapi.py`）：
+  1. **token 落盘持久化**（`state_store.py`，`/data/panel-state.json`）：重启复用，
+     少登录就少积累会话；
+  2. **登录成功后立即回收自己的历史脚本会话**：`GET /api/user/sessions` 列出，
+     仅回收 `user_agent` 以 `python-httpx` / `python-requests` / `python-urllib` /
+     `curl/` / `go-http-client` / `wget/` 开头且 `current=false` 的条目，逐条
+     `DELETE /api/user/sessions/{sid}`；**浏览器会话（Mozilla 系）绝不触碰**；
+  3. **409 自救**：旧 access_token 在会话上限打满后**依然有效**（上限只挡新建），
+     直接用它执行第 2 步腾出名额再重登一次。
+- ⚠️ 匹配脚本会话**只能看 user_agent，绝不能用 ip=127.0.0.1** —— 经 Caddy 反代
+  进来的浏览器请求在 New API 看来同样来自 127.0.0.1，按 IP 清理会误杀浏览器会话。
 
 ### 10.2 路由尾斜杠敏感
 

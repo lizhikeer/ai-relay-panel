@@ -27,7 +27,14 @@ def _is_sensitive(key: str) -> bool:
 
 @router.get("/health")
 async def health():
-    """免登录，供容器健康检查使用（契约 §8）。"""
+    """免登录，供容器健康检查使用（契约 §8）。
+
+    比 /api/status 更进一步：附带 `auth` —— 用**当前 token** 真实请求一次上游
+    鉴权接口。这样「token 被服务端吊销/失效」这类 /api/status 探不出的故障
+    （2026-10-24 的 409 死局期间健康检查一直绿着）能被监控看见。
+    探测用的是裸请求，**绝不触发登录** —— 健康检查每 30s 一次，
+    若它打登录接口，限流（20 次/20 分钟）和会话数都会被它打爆。
+    """
     client = get_client()
     upstream = "ok"
     latency = 0
@@ -39,7 +46,21 @@ async def health():
             upstream = "down"
     except Exception:  # noqa: BLE001
         upstream = "down"
-    return ok({"bff": "ok", "upstream": upstream, "upstream_latency_ms": latency})
+    auth_state, expires_in = client.auth_snapshot()
+    if auth_state == "ok":
+        # 本地没过期再花一次网络请求确认服务端认可；expired/none 直接如实上报
+        server_state = await client.probe_auth()
+        # 服务端拒绝但本地未过期：以服务端为准（下一笔业务请求会自动重登）
+        auth_state = {"ok": "ok", "invalid": "invalid", "none": "none", "unreachable": "unknown"}[server_state]
+    return ok(
+        {
+            "bff": "ok",
+            "upstream": upstream,
+            "upstream_latency_ms": latency,
+            "auth": auth_state,
+            "token_expires_in": expires_in,
+        }
+    )
 
 
 @router.get("/info")

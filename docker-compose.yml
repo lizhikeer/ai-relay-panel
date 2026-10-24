@@ -26,6 +26,11 @@ services:
       # （backend/app/config.py: PROJECT_ROOT = config.py 祖先两级 = 容器根）。
       # 只读挂载；改前端无需重建镜像，重启容器即可生效。
       - ./frontend:/frontend:ro
+      # token 持久化（backend/app/state_store.py 写 /data/panel-state.json）。
+      # 重启/重建容器后复用未过期的 access_token，免登录 → 少积累一条
+      # 30 天寿命的 user_sessions 记录（P0-1 会话上限治理的一环）。
+      # 目录属主须为容器内用户 panel(uid 10001)，deploy.sh 会自动 mkdir+chown。
+      - ./data:/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:18080/panel-api/system/health',timeout=3).status==200 else 1)"]
       interval: 30s
